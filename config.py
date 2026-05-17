@@ -38,8 +38,8 @@ BRIGHTNESS_THRESHOLD = 70    # was 80 — less sensitive to lighting
 # ══════════════════════════════════════════
 #  Smoothing — faster emotion response
 # ══════════════════════════════════════════
-SMOOTHING_WINDOW = 8   # was 12 — faster response
-MIN_STABLE_RATIO = 0.55
+SMOOTHING_WINDOW = 12   # كان 8 — نزوده عشان يبقى أثبت
+MIN_STABLE_RATIO = 0.60  # كان 0.55 — نزوده عشان يتأكد أكتر
 
 # ══════════════════════════════════════════
 #  Audio fallback

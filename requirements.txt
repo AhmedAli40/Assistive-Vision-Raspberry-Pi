@@ -1,0 +1,17 @@
+tensorflow>=2.10.0
+tf-keras
+opencv-python
+numpy
+deepface
+mtcnn
+scikit-image
+SpeechRecognition
+pyaudio
+sounddevice
+librosa
+pyttsx3
+pywin32
+edge-tts
+pygame
+gtts
+vosk

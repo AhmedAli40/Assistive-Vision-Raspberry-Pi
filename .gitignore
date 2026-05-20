@@ -1,8 +1,32 @@
+# Models — too large for GitHub
 models/
-logs/
+
+# Personal data
 face_data.pkl
 blocked.json
+
+# Logs
+logs/
+
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+
+# Model files
 *.h5
+*.keras
+*.tflite
 *.pkl
+
+# Audio cache
+*.mp3
+
+# Environment
+.env
+*.env
+
+# Training folders
+cnn_v3/
+cnn_v6/
+ensemble/

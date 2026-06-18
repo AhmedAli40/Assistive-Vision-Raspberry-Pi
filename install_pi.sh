@@ -3,10 +3,14 @@ set -euo pipefail
 
 sudo apt update
 sudo apt install -y \
+  python3-pip \
   python3-dev \
   python3-venv \
   portaudio19-dev \
+  libportaudio2 \
   libasound2-dev \
+  libsndfile1 \
+  libgomp1 \
   espeak-ng \
   ffmpeg \
   libatlas-base-dev \

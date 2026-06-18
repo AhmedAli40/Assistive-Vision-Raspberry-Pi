@@ -30,6 +30,8 @@ def main():
     print(f"Platform: {platform.platform()}")
     print(f"Machine: {platform.machine()}")
     print(f"RPI_MODE: {config.RPI_MODE}")
+    if Path("models/models").exists():
+        print("Warning: found models/models. Move the inner files up to ./models/.")
 
     ok = True
     for label, module in CHECKS:

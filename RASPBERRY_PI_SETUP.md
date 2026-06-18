@@ -2,93 +2,133 @@
 
 Target device: Raspberry Pi 4 Model B.
 
-## What Goes To GitHub
+Recommended OS: Raspberry Pi OS 64-bit.
 
-Commit the source code, tests, setup files, and documentation.
-
-Do not commit:
-
-- `models/`
-- `face_data.pkl`
-- `blocked.json`
-- `logs/`
-- `tts_cache/`
-- any personal face data or session recordings
-
-## System Packages
-
-Run:
+## 1. Clone
 
 ```bash
-chmod +x install_pi.sh
+cd ~
+git clone https://github.com/AhmedAli40/Assistive-Vision-Raspberry-Pi.git
+cd Assistive-Vision-Raspberry-Pi
+```
+
+## 2. Install
+
+```bash
+chmod +x install_pi.sh run_pi.sh download_models.sh
 ./install_pi.sh
 ```
 
-This installs Python dependencies plus Linux audio/TTS support such as PortAudio and `espeak-ng`.
+This installs:
+- Python virtual environment `.venv`
+- PortAudio/PyAudio support
+- Linux audio dependencies
+- `espeak-ng` offline TTS fallback
+- Raspberry Pi Python requirements
 
-## Models
+## 3. Download Models
 
-Copy the required model files manually after cloning:
+```bash
+./download_models.sh
+```
+
+Google Drive folder:
+
+```text
+https://drive.google.com/drive/folders/1XIOsn-erryTL9f5AB7jxJTJ5kEhGC1cL?usp=drive_link
+```
+
+Expected structure:
 
 ```text
 models/
   cnn_v3_final.h5
-  cnn_v3_final.tflite       recommended for Raspberry Pi emotion inference
+  cnn_v3_final.tflite
   vosk-model/
-  vosk-model-ar-mgb2-0.4/   optional but recommended for Arabic offline STT
+  vosk-model-ar-mgb2-0.4/
 ```
 
-Large model folders are ignored by Git and should be shared separately, for example by Google Drive or a GitHub Release.
-
-To generate the TFLite emotion model on your laptop before copying files to the Pi:
-
-```bash
-python tools/convert_emotion_to_tflite.py --input models/cnn_v3_final.h5 --output models/cnn_v3_final.tflite --quantize dynamic
-```
-
-## Run
-
-Check readiness first:
-
-```bash
-VISION_RPI_MODE=1 python tools/rpi_preflight.py
-```
+## 4. Preflight
 
 ```bash
 source .venv/bin/activate
+VISION_RPI_MODE=1 python tools/rpi_preflight.py
+```
+
+The result should end with:
+
+```text
+READY
+```
+
+If it prints `NOT READY`, read the missing dependency or missing model line and fix that item first.
+
+## 5. Run
+
+```bash
 ./run_pi.sh
 ```
 
-If the camera does not open, edit `config.py`:
-
-```python
-CAMERA_INDEX = 0
-```
-
-Or run:
+Try another camera index:
 
 ```bash
 VISION_CAMERA_INDEX=1 ./run_pi.sh
 ```
 
-`run_pi.sh` enables Raspberry Pi mode automatically:
+Show the OpenCV display window:
 
-- prefers `models/cnn_v3_final.tflite` for emotion detection
-- uses camera index `0` by default
-- disables the display window by default for headless assistive use
-- keeps all voice commands, registration, recognition, and emotion features active
+```bash
+VISION_SHOW_WINDOW=1 ./run_pi.sh
+```
 
-## Audio Notes
+Force `.h5` instead of TFLite:
 
-- Edge TTS needs internet.
-- Offline TTS on Raspberry Pi uses `espeak-ng`.
-- Google STT needs internet.
-- Vosk works offline if the model folders exist in `models/`.
+```bash
+VISION_USE_TFLITE=0 ./run_pi.sh
+```
 
-## Before Real Use
+## Runtime Behavior
 
-1. Test the microphone with a simple recording tool.
-2. Test camera index `0` and `1`.
-3. Register each person in good lighting.
-4. Use `vision improve person` if a registered person is sometimes detected as unknown.
-5. Use `vision new person` if the system mistakes a new person for someone registered.
+Raspberry Pi mode:
+- Uses camera index `0` by default.
+- Uses `models/cnn_v3_final.tflite` for emotion inference when available.
+- Keeps face recognition, registration, emotion detection, Arabic/English commands, and TTS active.
+- Disables the display window by default for headless use.
+
+## First Real Test
+
+1. Start the system with `./run_pi.sh`.
+2. Say `vision`.
+3. Say `vision who is this`.
+4. Register a person with `vision register`.
+5. Test a registered person.
+6. Test an unknown person.
+7. Test `vision pause` and `vision resume`.
+8. Test `vision delete` only after confirming the names list is correct.
+
+## Face Recognition Tips
+
+- Register each important person in good light.
+- During registration, face the camera, then slightly turn left/right, then change expression.
+- If a registered person appears as unknown, use `vision improve person`.
+- If a stranger is recognized as a registered person, use `vision new person` to register/correct them.
+
+## Audio Tips
+
+- Keep speakers away from the microphone.
+- Use a USB microphone if possible.
+- Run in a quiet room for the first calibration.
+- Vosk offline commands need `models/vosk-model/` and `models/vosk-model-ar-mgb2-0.4/`.
+- Google STT and Edge TTS work better with internet.
+
+## Do Not Commit
+
+These files are local/private and ignored by Git:
+
+```text
+models/
+face_data.pkl
+blocked.json
+logs/
+tts_cache/
+```

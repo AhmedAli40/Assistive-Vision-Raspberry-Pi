@@ -1,297 +1,331 @@
-# 🎯 Assistive Vision System v2
-### Real-Time Face Recognition + Emotion Detection + Bilingual Voice Interface
+# Assistive Vision Raspberry Pi
 
-> **Emotion Recognition Accuracy: 81.5%** (CNN v3 + Test-Time Augmentation)  
-> **Languages:** Arabic 🇪🇬 + English 🇺🇸  
-> **Voice:** Microsoft Edge TTS Neural (human-like voice)
+Assistive vision system for blind and visually impaired users.
 
----
+Features:
+- Face recognition for registered people.
+- Emotion detection.
+- Arabic and English voice commands.
+- Text-to-speech feedback.
+- Raspberry Pi 4 Model B deployment mode.
 
-## 📋 Table of Contents
-- [Requirements](#-requirements)
-- [Installation](#-installation)
-- [Raspberry Pi Setup](RASPBERRY_PI_SETUP.md)
-- [Download Models](#-download-models)
-- [Run the System](#-run-the-system)
-- [Voice Commands](#-voice-commands)
-- [Language & Voice Switching](#-language--voice-switching)
-- [Troubleshooting](#-troubleshooting)
-- [Project Structure](#-project-structure)
+Repository:
+`https://github.com/AhmedAli40/Assistive-Vision-Raspberry-Pi.git`
 
----
+## Quick Start On Raspberry Pi
 
-## 💻 Requirements
+Target device:
+- Raspberry Pi 4 Model B
+- Raspberry Pi OS 64-bit recommended
+- USB camera or Pi camera exposed as a camera device
+- USB microphone or headset microphone
+- Internet recommended for Google STT and Edge TTS
 
-### Operating System
-- Windows 10 / 11 (64-bit)
-
-### Python
-- Python **3.12.x** only — [Download here](https://www.python.org/downloads/release/python-3120/)
-- During installation: ✅ Make sure to check **"Add Python to PATH"**
-
-### Hardware
-- Webcam (built-in or external USB)
-- Microphone
-
-### Internet
-- Required for voice output (Edge TTS) and speech recognition (Google STT)
-- Works offline in limited mode via Vosk
-
----
-
-## 🚀 Installation
-
-### Step 1 — Clone the repository
-```bash
-git clone https://github.com/AhmedAli40/Assistive-Vision-System-v2-Acc-81.5-TTA.git
-cd Assistive-Vision-System-v2-Acc-81.5-TTA
-```
-
-Or download the ZIP directly from GitHub and extract it.
-
----
-
-### Step 2 — Install dependencies
-
-Open **Terminal (PowerShell)** inside the project folder and run:
+Clone the project:
 
 ```bash
-pip install -r requirements.txt
+cd ~
+git clone https://github.com/AhmedAli40/Assistive-Vision-Raspberry-Pi.git
+cd Assistive-Vision-Raspberry-Pi
 ```
 
-> ⏳ Installation may take 5–10 minutes — wait until it finishes
-
-Then install the audio libraries:
-```bash
-pip install edge-tts pygame
-```
-
----
-
-### Step 3 — Download Models
-
-Download the required files from Google Drive:
-
-🔗 **[Download Models from Google Drive](https://drive.google.com/drive/folders/1IiyegcJBzjf3WaNF5NjgujU8I55vBiDt?usp=drive_link)**
-
-After downloading, place the files as follows:
-
-```
-Assistive-Vision-System-v2/
-└── models/
-    ├── cnn_v3_final.h5        ← ✅ Required (main emotion model)
-    └── vosk-model/            ← ✅ Required (full folder for offline STT)
-        ├── am/
-        ├── conf/
-        ├── graph/
-        └── ...
-```
-
-> ⚠️ **Important:** The `models/` folder must be in the same directory as `main.py`
-
----
-
-### Step 4 — Configure Camera
-
-Open `config.py` and set your camera index:
-```python
-CAMERA_INDEX = 0   # 0 = built-in laptop camera
-                   # 1 = external USB camera
-```
-
----
-
-## ▶️ Run the System
+Install system and Python dependencies:
 
 ```bash
-python main.py
+chmod +x install_pi.sh run_pi.sh download_models.sh
+./install_pi.sh
 ```
 
-Or double-click `run.bat`
+Download the model files:
 
-On startup you should see:
-```
-[Model] Loaded successfully before DeepFace
-[TTS] Using Edge TTS neural voice: en-US-AriaNeural
-System Ready! Press Q or ESC to quit.
-```
-
-> ⏳ First run may take 30–60 seconds to load Facenet512
-
----
-
-## 🎤 Voice Commands
-
-### Activation
-Say the wake word first, then wait for **"Yes?"**, then say your command.
-
-| Arabic | English |
-|--------|---------|
-| **فيجن** | **vision** |
-| فيجين | hey vision |
-| بصر | ok vision |
-| مساعد | — |
-
----
-
-### Person Commands
-
-| Action | Arabic | English |
-|--------|--------|---------|
-| Register person | سجل، احفظ، اضف | register, save, add, record |
-| Who is this? | مين، عرفني | who, identify, tell me |
-| Delete person | احذف، امسح، شيل | delete, remove, erase, forget |
-| List registered | الأسماء، قائمة | list, show, names |
-
----
-
-### Block Commands
-
-| Action | Arabic | English |
-|--------|--------|---------|
-| Block person | احظر، امنع | block, ban, blacklist |
-| Unblock person | الغ الحظر | unblock, allow, unlock |
-
----
-
-### Voice Control Commands
-
-| Action | Arabic | English |
-|--------|--------|---------|
-| Mute | اسكت، سكوت، كفاية | quiet, silence, mute |
-| Resume | اتكلم، كمل | speak, resume, continue |
-| Stop immediately | وقف، بس | stop, halt |
-
----
-
-## 🌐 Language & Voice Switching
-
-### Switch Language
-After the wake word, say:
-
-| From → To | Say |
-|-----------|-----|
-| English → Arabic | `arabic` or `switch to arabic` or `عربي` |
-| Arabic → English | `english` or `switch to english` or `انجليزي` |
-
----
-
-### Switch Voice Gender
-After the wake word, say:
-
-| Voice | Arabic Command | English Command |
-|-------|---------------|-----------------|
-| Arabic male | صوت رجالي | male arabic |
-| Arabic female | صوت ستات | female arabic |
-| English male | صوت رجالي إنجليزي | male english |
-| English female | صوت أنثى إنجليزي | female english |
-
----
-
-### Available Voices
-
-| Language | Gender | Voice |
-|----------|--------|-------|
-| Arabic | Female ✅ default | ar-EG-SalmaNeural (Egyptian) |
-| Arabic | Male | ar-EG-ShakirNeural (Egyptian) |
-| English | Female ✅ default | en-US-AriaNeural |
-| English | Male | en-US-GuyNeural |
-
----
-
-## 😊 Detected Emotions
-
-| Emotion | Arabic |
-|---------|--------|
-| Happy | سعيد |
-| Sad | حزين |
-| Angry | غاضب |
-| Fear | خائف |
-| Surprise | متفاجئ |
-| Neutral | طبيعي |
-| Disgust | مشمئز |
-
----
-
-## 🔧 Troubleshooting
-
-### ❌ `ModuleNotFoundError`
 ```bash
-pip install -r requirements.txt
-pip install edge-tts pygame
+./download_models.sh
 ```
 
-### ❌ `Model not found at models/cnn_v3_final.h5`
-Download the model from Google Drive and place it inside the `models/` folder.
+Check readiness:
 
-### ❌ Camera not working
-Change `CAMERA_INDEX` in `config.py`:
-```python
-CAMERA_INDEX = 0  # try 0 or 1
-```
-
-### ❌ No voice output
 ```bash
-pip install edge-tts pygame
+VISION_RPI_MODE=1 python tools/rpi_preflight.py
 ```
-Make sure you have an active internet connection — Edge TTS requires it.
 
-### ❌ Microphone not responding
-- Make sure the microphone is not muted in Windows
-- Wait for this message on startup: `STT Ready. Threshold = ...`
+Run:
 
-### ❌ `No module named 'stt'`
-Make sure you run `main.py` from the project root folder:
 ```bash
-cd "path\to\Assistive-Vision-System-v2"
-python main.py
+./run_pi.sh
 ```
 
-### ❌ Slow emotion detection
-This is normal on first run. After 30 seconds the system stabilizes.  
-If still slow, increase `INFERENCE_EVERY_N` in `config.py`:
-```python
-INFERENCE_EVERY_N = 6
+## Required Models
+
+Large model files are stored separately on Google Drive:
+
+`https://drive.google.com/drive/folders/1XIOsn-erryTL9f5AB7jxJTJ5kEhGC1cL?usp=drive_link`
+
+After download, the project should look like this:
+
+```text
+Assistive-Vision-Raspberry-Pi/
+  main.py
+  models/
+    cnn_v3_final.h5
+    cnn_v3_final.tflite
+    vosk-model/
+    vosk-model-ar-mgb2-0.4/
 ```
 
----
+`cnn_v3_final.tflite` is used by default on Raspberry Pi for smoother emotion inference. The `.h5` file is kept as a fallback.
 
-## 📁 Project Structure
+## Raspberry Pi Mode
 
-```
-Assistive-Vision-System-v2/
-├── main.py                    # Entry point
-├── config.py                  # All settings
-├── logic_controller.py        # System logic & voice commands
-├── requirements.txt           # Python dependencies
-├── install.bat                # Auto installer
-├── run.bat                    # Run script
-├── shared/
-│   ├── tts.py                 # Text-to-Speech engine (Edge TTS)
-│   └── stt.py                 # Speech-to-Text engine
-├── face/
-│   ├── face_db.py             # Face database
-│   ├── face_processor.py      # Face detection & recognition
-│   └── registration.py        # Person registration flow
-├── emotion/
-│   ├── face_detector.py       # Emotion detection (CNN)
-│   ├── audio_detector.py      # Audio emotion fallback
-│   └── display.py             # Visual results overlay
-└── models/                    # ⬅️ Download from Google Drive
-    ├── cnn_v3_final.h5        # Main emotion model (81.5% accuracy)
-    └── vosk-model/            # Offline speech recognition
+`run_pi.sh` sets:
+
+```bash
+VISION_RPI_MODE=1
+VISION_CAMERA_INDEX=0
+VISION_USE_TFLITE=1
 ```
 
----
+Useful overrides:
 
-## 👨‍💻 Developers
+```bash
+VISION_CAMERA_INDEX=1 ./run_pi.sh
+VISION_USE_TFLITE=0 ./run_pi.sh
+VISION_SHOW_WINDOW=1 ./run_pi.sh
+```
 
-| Name | Role |
-|------|------|
-| Ahmed Ali | Emotion Recognition + Face Recognition + System Integration |
-| Ismail Mohsen | Voice Assistant Integration |
+## Voice Commands
 
----
+Say `vision` or `فيجن` before commands.
 
-## 📄 License
-This is an academic project — 2026
+Activation:
+
+```text
+vision
+start vision
+فيجن
+فيجين
+ابدأ فيجن
+ابدا فيجن
+```
+
+Identify current person:
+
+```text
+vision who is this
+vision identify
+فيجن مين ده
+فيجن عرفني
+فيجن من هذا
+```
+
+Register person:
+
+```text
+vision register
+vision add person
+vision save person
+vision new person
+vision register new person
+فيجن سجل
+فيجن ضيف شخص
+فيجن احفظ الشخص
+فيجن شخص جديد
+فيجن سجل شخص جديد
+```
+
+Improve an existing registration:
+
+```text
+vision improve person
+vision improved person
+vision update person
+vision improve registration
+vision update registration
+فيجن حسن الشخص
+فيجن حسن التسجيل
+فيجن حدث التسجيل
+```
+
+Delete a person:
+
+```text
+vision delete
+vision del
+vision remove
+vision delete person
+vision remove person
+vision delete number
+فيجن احذف
+فيجن امسح
+فيجن احذف شخص
+فيجن امسح شخص
+فيجن احذف رقم
+```
+
+When the system reads registered names by number:
+
+```text
+number 1
+number 2
+رقم 1
+رقم 2
+one
+two
+واحد
+اتنين
+```
+
+Delete all names:
+
+```text
+vision delete all
+vision delete all names
+فيجن امسح الكل
+فيجن احذف كل الاسماء
+فيجن احذف كل الأسماء
+```
+
+List registered names:
+
+```text
+vision list names
+vision show names
+vision registered names
+فيجن اسماء
+فيجن أسماء
+فيجن مين مسجل
+فيجن اعرض الاسماء
+فيجن اعرض الأسماء
+```
+
+Pause or resume automatic person/emotion announcements:
+
+```text
+vision standby
+vision pause
+vision resume
+vision continue
+فيجن هدوء
+فيجن استنى
+فيجن تابع
+فيجن كمل
+```
+
+Mute or unmute system voice:
+
+```text
+vision quiet
+vision mute
+vision silence
+vision unmute
+فيجن اسكت
+فيجن صمت
+فيجن شغل الصوت
+```
+
+Language and voice:
+
+```text
+vision arabic
+vision english
+vision arabic male voice
+vision arabic female voice
+vision english male voice
+vision english female voice
+فيجن عربي
+فيجن انجليزي
+فيجن صوت رجالي عربي
+فيجن صوت نسائي عربي
+فيجن صوت رجالي انجليزي
+فيجن صوت نسائي انجليزي
+```
+
+Block and unblock:
+
+```text
+vision block
+vision block person
+vision unblock
+vision unblock person
+فيجن احظر
+فيجن احظر الشخص
+فيجن فك حظر
+فيجن ارفع الحظر
+```
+
+Close:
+
+```text
+close vision
+goodbye
+bye vision
+اغلق
+أغلق
+اقفل
+أقفل
+مع السلامة
+```
+
+Confirmation words:
+
+```text
+yes
+no
+yeah
+nope
+okay
+cancel
+نعم
+لا
+أيوه
+ايوه
+تمام
+بلاش
+الغاء
+إلغاء
+```
+
+## Important Runtime Notes
+
+- For best face recognition, register each person in good light.
+- Use `vision improve person` if a registered person sometimes appears as unknown.
+- Use `vision new person` if an unknown person is mistakenly recognized as someone registered.
+- The system filters random Vosk command noise and requires clear yes/no confirmations for risky actions.
+- `face_data.pkl`, `blocked.json`, `logs/`, `tts_cache/`, and `models/` are intentionally not committed to GitHub.
+
+## Troubleshooting
+
+If dependencies are missing:
+
+```bash
+./install_pi.sh
+```
+
+If models are missing:
+
+```bash
+./download_models.sh
+VISION_RPI_MODE=1 python tools/rpi_preflight.py
+```
+
+If the camera does not open:
+
+```bash
+VISION_CAMERA_INDEX=1 ./run_pi.sh
+```
+
+If TFLite fails on Pi, use the Keras fallback:
+
+```bash
+VISION_USE_TFLITE=0 ./run_pi.sh
+```
+
+If microphone commands trigger without speaking, recalibrate in a quiet room and keep speakers away from the microphone.
+
+## Development Checks
+
+On the development machine:
+
+```bash
+python -m py_compile main.py config.py logic_controller.py shared/stt.py shared/tts.py shared/draw_utils.py face/face_db.py face/face_processor.py face/registration.py emotion/audio_detector.py emotion/display.py emotion/face_detector.py test_speech_and_commands.py
+python test_speech_and_commands.py
+```

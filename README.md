@@ -10,6 +10,7 @@
 ## 📋 Table of Contents
 - [Requirements](#-requirements)
 - [Installation](#-installation)
+- [Raspberry Pi Setup](RASPBERRY_PI_SETUP.md)
 - [Download Models](#-download-models)
 - [Run the System](#-run-the-system)
 - [Voice Commands](#-voice-commands)

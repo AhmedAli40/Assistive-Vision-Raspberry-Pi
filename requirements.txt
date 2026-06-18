@@ -15,3 +15,6 @@ edge-tts
 pygame
 gtts
 vosk
+Pillow
+arabic-reshaper
+python-bidi

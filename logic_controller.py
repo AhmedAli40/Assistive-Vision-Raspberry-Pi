@@ -1,228 +1,187 @@
 """
-logic_controller.py - Brain of the Assistive Vision System
-===========================================================
-- Multi-face support (closest first)
-- Switchable EN/AR language at runtime
-- Concise Arabic phrases
-- Varied response templates
+logic_controller.py — v8 Updated
+================================
+1. السيستم صامت تماماً حتى يسمع wake word
+2. بعد wake word → session مفتوحة، أوامر مباشرة بدون "vision" تاني
+3. session بتقفل بـ "close system / goodbye / وداعا / اغلق" إلخ أو بعد 20 ثانية خمول
+4. أثناء أي أمر → لا إعلانات نهائياً
+5. عربي/إنجليزي كامل وصحيح
 """
 
 import time
-import random
 import threading
 import logging
-
+import re
 import config
-try:
-    from shared.stt import (match_command, detect_switch,
-                             detect_voice_change, is_wake_word, EMOTIONS_AR)
-except ImportError:
-    from stt import (match_command, detect_switch,
-                     detect_voice_change, is_wake_word, EMOTIONS_AR)
 
 logger = logging.getLogger(__name__)
 
-# ── Emotion groups — big change = crossing group boundary → announce fast ─────
-_POSITIVE  = {"Happy", "Surprise"}
-_NEGATIVE  = {"Angry", "Disgust", "Fear", "Sad"}
-_NEUTRAL   = {"Neutral"}
-
-def _is_big_change(old_emo: str, new_emo: str) -> bool:
-    """Returns True if emotion crossed a group boundary (e.g. Neutral→Happy)."""
-    def _group(e):
-        if e in _POSITIVE: return "pos"
-        if e in _NEGATIVE: return "neg"
-        return "neu"
-    return _group(old_emo) != _group(new_emo)
-
-# ── Name transliteration — English names → Arabic pronunciation ───────────────
-# يضاف اسم جديد تلقائياً لو مش موجود في القاموس
-
-NAME_AR = {
-    # أسماء شائعة عربية بنطق إنجليزي
-    "ahmed":    "أحمد",
-    "mohamed":  "محمد",
-    "mohammed": "محمد",
-    "muhammad": "محمد",
-    "ali":      "علي",
-    "omar":     "عمر",
-    "sara":     "سارة",
-    "sarah":    "سارة",
-    "mona":     "منى",
-    "nour":     "نور",
-    "noura":    "نورة",
-    "youssef":  "يوسف",
-    "yousef":   "يوسف",
-    "joseph":   "يوسف",
-    "karim":    "كريم",
-    "kareem":   "كريم",
-    "layla":    "ليلى",
-    "leila":    "ليلى",
-    "hana":     "هنا",
-    "hanna":    "هنا",
-    "mariam":   "مريم",
-    "maryam":   "مريم",
-    "mary":     "ماري",
-    "fatima":   "فاطمة",
-    "fatime":   "فاطمة",
-    "aisha":    "عائشة",
-    "aysha":    "عائشة",
-    "hassan":   "حسن",
-    "hussein":  "حسين",
-    "hosein":   "حسين",
-    "tarek":    "طارق",
-    "tariq":    "طارق",
-    "nadia":    "نادية",
-    "rania":    "رانيا",
-    "rana":     "رنا",
-    "dina":     "دينا",
-    "heba":     "هبة",
-    "amr":      "عمرو",
-    "amro":     "عمرو",
-    "adel":     "عادل",
-    "walid":    "وليد",
-    "khaled":   "خالد",
-    "khalid":   "خالد",
-    "sameh":    "سامح",
-    "sami":     "سامي",
-    "wael":     "وائل",
-    "sherif":   "شريف",
-    "sherief":  "شريف",
-    "ismail":   "إسماعيل",
-    "osama":    "أسامة",
-    "usama":    "أسامة",
-    "mahmoud":  "محمود",
-    "mostafa":  "مصطفى",
-    "mustafa":  "مصطفى",
-    "yara":     "يارا",
-    "yasmin":   "ياسمين",
-    "jasmine":  "ياسمين",
-    "manar":    "منار",
-    "mai":      "ماي",
-    "may":      "ماي",
-    # أسماء أجنبية شائعة
-    "john":     "جون",
-    "james":    "جيمس",
-    "michael":  "مايكل",
-    "david":    "ديفيد",
-    "chris":    "كريس",
-    "daniel":   "دانيال",
-    "adam":     "آدم",
-    "peter":    "بيتر",
-    "mark":     "مارك",
-    "paul":     "بول",
-    "george":   "جورج",
-    "anna":     "آنا",
-    "emma":     "إيما",
-    "olivia":   "أوليفيا",
-    "sophia":   "صوفيا",
-    "lisa":     "ليزا",
-    "kate":     "كيت",
-    "emily":    "إيميلي",
-    "jessica":  "جيسيكا",
-    "linda":    "ليندا",
-}
-
-def _arabic_name(name: str) -> str:
-    """
-    Convert English name to Arabic pronunciation.
-    If not in dictionary, returns the original name
-    so SAPI/EdgeTTS can attempt to pronounce it.
-    """
-    key = name.strip().lower()
-    # Check full name first, then first word only
-    if key in NAME_AR:
-        return NAME_AR[key]
-    first = key.split()[0] if " " in key else key
-    if first in NAME_AR:
-        rest = name.split(" ", 1)[1] if " " in name else ""
-        return NAME_AR[first] + (" " + rest if rest else "")
-    return name   # fallback: original name
-
-# ── Emotion phrase builders ───────────────────────────────────────────────────
-
-def _en_emotion(name: str, emotion: str, certain: bool = True) -> str:
-    if certain:
-        return random.choice([
-            f"{name} looks {emotion}",
-            f"{name} seems {emotion}",
-            f"{name} appears {emotion}",
-        ])
-    return random.choice([
-        f"Might be {name}, looks {emotion}",
-        f"I think that's {name}, {emotion}",
-    ])
-
-def _en_unknown(emotion: str) -> str:
-    return random.choice([
-        f"Unknown person, {emotion}",
-        f"Don't recognize them, {emotion}",
-        f"Unknown face, {emotion}",
-    ])
-
-def _ar_emotion(name: str, emotion: str, certain: bool = True) -> str:
-    ar  = EMOTIONS_AR.get(emotion, emotion)
-    ar_name = _arabic_name(name)
-    if certain:
-        return random.choice([
-            f"{ar_name} يبدو {ar}",
-            f"{ar_name} يبدو عليه {ar}",
-            f"{ar_name} حالته {ar}",
-        ])
-    return random.choice([
-        f"ممكن يكون {ar_name}، ويبدو {ar}",
-        f"أظن إنه {ar_name}، وهو {ar}",
-    ])
-
-def _ar_unknown(emotion: str) -> str:
-    ar = EMOTIONS_AR.get(emotion, emotion)
-    return random.choice([
-        f"شخص مجهول يبدو {ar}",
-        f"وجه غير معروف، يبدو {ar}",
-    ])
-
-# ── Static phrases ────────────────────────────────────────────────────────────
-
-PHRASES = {
+# ══════════════════════════════════════════════════════════════
+#  نصوص اللغتين
+# ══════════════════════════════════════════════════════════════
+_STRINGS = {
     "en": {
-        "yes":              "Yes?",
-        "no_speech":        "Didn't catch that.",
-        "no_person":        "No one detected.",
-        "cmd_not_found":    "Unknown command.",
-        "no_registered":    "No one registered.",
-        "quiet_on":         "Quiet.",
-        "quiet_off":        "Resuming.",
-        "low_light":        "Low light, using audio.",
-        "switched_to_ar":   "Switched to Arabic.",
-        "switched_to_en":   "Already in English.",
-        "already_reg":      lambda n: f"{n} already registered.",
-        "cannot_block_reg": lambda n: f"Can't block {n}, use delete.",
-        "who_unknown":      lambda e: f"Unknown, {e}.",
-        "who_known":        lambda n, e: f"{n}, {e}.",
-        "reg_list":         lambda ns: f"Registered: {', '.join(ns)}.",
-        "voice_changed":    lambda g: f"Voice changed to {'male' if g == 'male' else 'female'}.",
-        "voice_already":    lambda g: f"Already using {'male' if g == 'male' else 'female'} voice.",
+        "welcome":         "Vision system is ready. How can I help?",
+        "goodbye":         "Vision system closed. Say start vision to activate again.",
+        "no_command":      "I did not hear a command. Please try again.",
+        "no_person":       "No person in front of the camera.",
+        "already_reg":     "{name} is already registered.",
+        "confirm_new_person": "I think this is {name}. Is this a new person? Say yes or no.",
+        "cannot_block":    "Cannot block a registered person. Use delete instead.",
+        "unknown_emotion": "Unknown person, they look {emotion}.",
+        "known_emotion":   "{name} looks {emotion}.",
+        "known_unsure":    "I think this is {name}, they look {emotion}.",
+        "no_registered":   "No registered persons.",
+        "reg_list":        "Registered persons: {names}.",
+        "quiet_on":        "Quiet mode on.",
+        "quiet_off":       "Resuming announcements.",
+        "not_recognized":  "Command not recognized. Please try again.",
+        "low_light":       "Low light detected. Relying on audio analysis.",
+        "lang_en":         "Switched to English.",
+        "lang_ar":         "Switched to Arabic.",
+        "voice_male_ar":   "Switched to Arabic male voice.",
+        "voice_female_ar": "Switched to Arabic female voice.",
+        "voice_male_en":   "Switched to English male voice.",
+        "voice_female_en": "Switched to English female voice.",
+        "session_timeout": "Going to standby due to inactivity.",
     },
     "ar": {
-        "yes":              "نعم؟",
-        "no_speech":        "لم أسمع شيئاً",
-        "no_person":        "لا يوجد أحد أمامي",
-        "cmd_not_found":    "الأمر غير معروف",
-        "no_registered":    "لا توجد أسماء مسجلة",
-        "quiet_on":         "حسناً، سأصمت",
-        "quiet_off":        "حسناً، سأكمل الكلام",
-        "low_light":        "الإضاءة ضعيفة، سأعتمد على الصوت",
-        "switched_to_ar":   "تم التحويل إلى العربية",
-        "switched_to_en":   "تم التحويل إلى الإنجليزية",
-        "already_reg":      lambda n: f"{_arabic_name(n)} مسجل بالفعل",
-        "cannot_block_reg": lambda n: f"لا يمكن حظر {_arabic_name(n)}، استخدم أمر الحذف",
-        "who_unknown":      lambda e: f"شخص غير معروف، يبدو {EMOTIONS_AR.get(e, e)}",
-        "who_known":        lambda n, e: f"هذا {_arabic_name(n)}، يبدو {EMOTIONS_AR.get(e, e)}",
-        "reg_list":         lambda ns: f"الأسماء المسجلة هي: {', '.join(ns)}",
-        "voice_changed":    lambda g: f"تم التغيير إلى صوت {'ذكر' if g == 'male' else 'أنثى'}.",
-        "voice_already":    lambda g: f"الصوت الحالي {'ذكر' if g == 'male' else 'أنثى'} بالفعل.",
+        "welcome":         "نظام الرؤية جاهز. كيف أساعدك؟",
+        "goodbye":         "تم إغلاق النظام. قل ابدأ فيجن للتفعيل من جديد.",
+        "no_command":      "لم أسمع أمراً. من فضلك حاول مرة أخرى.",
+        "no_person":       "لا يوجد شخص أمام الكاميرا.",
+        "already_reg":     "{name} مسجل بالفعل.",
+        "confirm_new_person": "أظن أن هذا {name}. هل هذا شخص جديد؟ قل نعم أو لا.",
+        "cannot_block":    "لا يمكن حظر شخص مسجل. استخدم أمر الحذف.",
+        "unknown_emotion": "شخص غير معروف، يبدو {emotion}.",
+        "known_emotion":   "{name} يبدو {emotion}.",
+        "known_unsure":    "أظن أن هذا {name}، يبدو {emotion}.",
+        "no_registered":   "لا يوجد أشخاص مسجلون.",
+        "reg_list":        "الأشخاص المسجلون: {names}.",
+        "quiet_on":        "تم تفعيل وضع الصمت.",
+        "quiet_off":       "استئناف الإعلانات.",
+        "not_recognized":  "الأمر غير معروف. من فضلك حاول مرة أخرى.",
+        "low_light":       "الإضاءة منخفضة. سيتم الاعتماد على تحليل الصوت.",
+        "lang_en":         "تم التبديل إلى الإنجليزية.",
+        "lang_ar":         "تم التبديل إلى العربية.",
+        "voice_male_ar":   "تم التبديل إلى صوت رجالي عربي.",
+        "voice_female_ar": "تم التبديل إلى صوت نسائي عربي.",
+        "voice_male_en":   "تم التبديل إلى صوت رجالي إنجليزي.",
+        "voice_female_en": "تم التبديل إلى صوت نسائي إنجليزي.",
+        "session_timeout": "تم الانتقال إلى وضع الاستعداد لعدم النشاط.",
     },
 }
+
+EMOTIONS_AR = {
+    "Angry":    "غاضب",
+    "Disgust":  "مشمئز",
+    "Fear":     "خائف",
+    "Happy":    "سعيد",
+    "Neutral":  "طبيعي",
+    "Sad":      "حزين",
+    "Surprise": "متفاجئ",
+}
+
+# كلمات تفعيل الـ session
+_WAKE_WORDS = [
+    "start vision", "hi vision", "hey vision", "activate vision", "open vision", "vision",
+    "ابدأ فيجن", "ابدا فيجن", "فيجن", "فيجين",
+    "تفعيل", "مساعد", "بصر",
+]
+
+# كلمات إغلاق الـ session
+_CLOSE_WORDS = [
+    "close system", "goodbye", "good bye", "bye vision",
+    "stop vision", "exit vision", "deactivate", "shutdown",
+    "close vision", "exit",
+    "اغلق", "أغلق", "وداعا", "وداعً", "مع السلامة",
+    "اوقف", "أوقف", "انهي", "أنهي", "اقفل", "أقفل",
+    "اغلق النظام", "اوقف النظام",
+]
+
+# أوامر اللغة
+_AR_WORDS = ["arabic", "عربي", "بالعربي", "عربية", "غير للعربي",
+             "switch to arabic", "كلمني عربي", "تحويل عربي"]
+_EN_WORDS = ["english", "انجليزي", "إنجليزي", "بالانجليزي",
+             "غير للانجليزي", "switch to english", "كلمني انجليزي"]
+
+# أوامر التسجيل
+_REG_WORDS   = ["register","save","add","enroll","record","new person","learn",
+                "سجل","تسجيل","اضف","ضيف","احفظ","اعرفني","سجلني","اعرف"]
+_DEL_WORDS   = ["delete","remove","erase","forget","clear","wipe","unregister",
+                "احذف","امسح","شيل","ازيل","حذف","الغ التسجيل"]
+_CLEAR_ALL_WORDS = ["clear all", "delete all", "wipe database", "wipe names",
+                    "امسح الكل", "احذف الكل", "فرمتة الاسماء", "احذف جميع الاسماء", "حذف الكل"]
+_BLOCK_WORDS = ["block","ban","blacklist","restrict",
+                "احظر","حظر","امنع","منع","حجب","بلوك"]
+_UNBLK_WORDS = ["unblock","allow","unlock","whitelist","remove block",
+                "فك حظر","الغ الحظر","ارفع الحظر","سمح","اسمح"]
+_WHO_WORDS   = ["who","identify","tell me","who is",
+                "مين","عرفني","هو مين","من هو","من هذا"]
+_LIST_WORDS  = ["list","names","show names","registered",
+                "قائمة","الاسامي","مين مسجل","اسماء"]
+_QUIET_WORDS = ["quiet","silence","mute","shut up",
+                "اسكت","سكوت","كفاية","صمت","اصمت"]
+_SPEAK_WORDS = ["speak","resume","unmute","continue",
+                "اتكلم","كمل","استمر","تكلم","شغل الصوت"]
+
+# أوامر تغيير جنس الصوت
+_MALE_AR_WORDS   = [
+    "صوت رجالي", "صوت راجل", "صوت ذكر", "صوت رجل", "صوت ولد", "صوت ذكوري",
+    "رجالي", "راجل", "رجل", "ذكوري", "ذكر", "ولد", "تغيير لصوت رجالي",
+    "male arabic", "arabic male", "arabic man", "man arabic", "arabic male voice", 
+    "arabic man voice", "arabic boy", "boy arabic", "arabic guy", "guy arabic",
+    "رجالي عربي", "راجل عربي", "رجل عربي", "ذكر عربي", "ولد عربي", "عربي رجالي", 
+    "عربي راجل", "عربي ذكر", "صوت رجالي عربي", "صوت رجل عربي"
+]
+_FEMALE_AR_WORDS = [
+    "صوت ستات", "صوت بنت", "صوت انثى", "صوت أنثى", "صوت نسائي", "صوت نسوي", "صوت بناتي",
+    "نسائي", "نسوي", "ست", "بنت", "بناتي", "أنثى", "انثى", "تغيير لصوت نسائي",
+    "female arabic", "arabic female", "arabic woman", "woman arabic", "arabic female voice", 
+    "arabic woman voice", "arabic girl", "girl arabic", "arabic lady", "lady arabic",
+    "نسائي عربي", "نسوي عربي", "بناتي عربي", "بنت عربي", "انثى عربي", "عربي نسائي", 
+    "عربي بناتي", "عربي بنت", "صوت نسائي عربي", "صوت بنت عربي", "صوت انثى عربي"
+]
+_MALE_EN_WORDS   = [
+    "male english", "english male", "male voice", "man voice", "boy voice", "guy voice", 
+    "english man", "man english", "male", "man", "boy", "guy", "gentleman", "change to male", 
+    "change to man", "switch to male", "switch to man", "english male voice", "english man voice",
+    "صوت رجالي انجليزي", "صوت ذكر انجليزي", "صوت رجل انجليزي", "رجالي انجليزي", "رجل انجليزي", "ذكر انجليزي"
+]
+_FEMALE_EN_WORDS = [
+    "female english", "english female", "female voice", "woman voice", "girl voice", "lady voice", 
+    "english woman", "woman english", "english girl", "female", "woman", "girl", "lady", 
+    "change to female", "change to woman", "switch to female", "switch to woman", "english female voice", 
+    "english woman voice", "english girl voice",
+    "صوت نسائي انجليزي", "صوت انثى انجليزي", "صوت بنت انجليزي", "نسائي انجليزي", "بنت انجليزي", "انثى انجليزي"
+]
+
+
+# Final controlled voice-command set. These override the older broad lists above.
+_WAKE_WORDS = ["start vision", "vision", "ابدأ فيجن", "ابدا فيجن", "فيجن", "فيجين"]
+_CLOSE_WORDS = ["close vision", "goodbye", "bye vision", "اغلق", "أغلق", "اقفل", "أقفل", "مع السلامة"]
+_AUTO_PAUSE_WORDS = ["standby", "pause", "هدوء", "استنى"]
+_AUTO_RESUME_WORDS = ["resume", "continue", "تابع", "كمل"]
+_AR_WORDS = ["arabic", "switch to arabic", "عربي"]
+_EN_WORDS = ["english", "switch to english", "انجليزي", "إنجليزي"]
+_REG_WORDS = ["register", "add person", "save person", "new person", "register new person", "سجل", "ضيف شخص", "احفظ الشخص", "شخص جديد", "سجل شخص جديد"]
+_IMPROVE_WORDS = [
+    "improve person", "improved person", "update person",
+    "improve registration", "improved registration", "update registration",
+    "حسن التسجيل", "حدث التسجيل", "حسن الشخص"
+]
+_DEL_WORDS = ["delete person", "remove person", "delete number", "احذف شخص", "امسح شخص", "احذف رقم"]
+_CLEAR_ALL_WORDS = ["delete all", "delete all names", "امسح الكل", "احذف كل الاسماء", "احذف كل الأسماء"]
+_BLOCK_WORDS = ["block", "block person", "احظر", "احظر الشخص"]
+_UNBLK_WORDS = ["unblock", "unblock person", "فك حظر", "ارفع الحظر"]
+_WHO_WORDS = ["who is this", "identify", "مين ده", "عرفني", "من هذا"]
+_LIST_WORDS = ["list names", "show names", "registered names", "اسماء", "أسماء", "مين مسجل", "اعرض الاسماء", "اعرض الأسماء"]
+_QUIET_WORDS = ["quiet", "mute", "silence", "اسكت", "صمت"]
+_SPEAK_WORDS = ["unmute", "شغل الصوت"]
+_MALE_AR_WORDS = ["arabic male voice", "صوت رجالي عربي"]
+_FEMALE_AR_WORDS = ["arabic female voice", "صوت نسائي عربي"]
+_MALE_EN_WORDS = ["english male voice", "صوت رجالي انجليزي", "صوت رجالي إنجليزي"]
+_FEMALE_EN_WORDS = ["english female voice", "صوت نسائي انجليزي", "صوت نسائي إنجليزي"]
 
 
 class LogicController:
@@ -234,79 +193,85 @@ class LogicController:
         self.proc = face_processor
         self.db   = face_db
 
-        self._lang = config.LANGUAGE
-
         self._last_announced  = {}
         self._last_seen       = {}
         self._last_emotion    = {}
+        self._emotion_candidate = {}
 
         self._current_name    = None
         self._current_emotion = None
 
         self._announce_queue  = []
         self._announcing      = False
+        self._auto_announce_enabled = True
         self._low_light_warned = False
-        self._processing_command = False
 
-        threading.Timer(5.0, self._start_command_listener).start()
-        print(f"      Logic Controller ready. Language: {self._lang.upper()}")
+        # ── بفر تأكيد وجود الشخص ────────────────────────────────────────────
+        self._presence_buf: dict = {}    # { name: deque([True/False, ...]) }
+        self._presence_n   = 6          # حجم البفر
+        self._presence_min = 4          # تأكيد أسرع مع حماية كافية
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+        # ── حالة النظام ──────────────────────────────────────────────────────
+        self._session_active      = False
+        self._command_in_progress = False
+        self._last_command_time   = time.time()  # لتتبع وقت عدم النشاط
 
-    def _p(self, key: str, *args) -> str:
-        val = PHRASES[self._lang][key]
-        return val(*args) if callable(val) else val
+        # نزلنا من 5.0 ل→ 1.0 ثانية — السيستم جاهز للأوامر تقريباً فوراً بعد التشغيل
+        threading.Timer(1.0, self._start_listener).start()
+        print("      Logic Controller ready.")
 
-    def _say(self, key: str, *args):
-        self.tts.say_wait(self._p(key, *args))
+    # ══════════════════════════════════════════════════════════════
+    #  مساعدات اللغة
+    # ══════════════════════════════════════════════════════════════
 
-    def _build_emotion_msg(self, name, emotion, certain):
-        if self._lang == "ar":
-            return _ar_emotion(name, emotion, certain)
-        return _en_emotion(name, emotion, certain)
+    def _lang(self) -> str:
+        return getattr(config, "LANGUAGE", "en")
 
-    def _build_unknown_msg(self, emotion):
-        if self._lang == "ar":
-            return _ar_unknown(emotion)
-        return _en_unknown(emotion)
+    def _t(self, key: str, **kwargs) -> str:
+        lang = self._lang()
+        text = _STRINGS.get(lang, _STRINGS["en"]).get(key, key)
+        if kwargs:
+            text = text.format(**kwargs)
+        return text
 
-    def _switch_language(self, lang: str):
-        old = self._lang
-        self._lang = lang
-        config.LANGUAGE = lang
-        self.tts.set_language(lang)
-        self.stt.set_language(lang)
-        if lang == "ar":
-            self.tts.say_wait(PHRASES["ar"]["switched_to_ar"])
-        else:
-            self.tts.say_wait(PHRASES["en"]["switched_to_en" if old == "en" else "switched_to_en"])
-        print(f"[LANG] → {lang.upper()}")
+    def _emotion_str(self, emotion: str) -> str:
+        if self._lang() == "ar":
+            return EMOTIONS_AR.get(emotion, emotion)
+        return emotion
 
-    def _change_voice(self, lang: str, gender: str):
-        """Change voice gender for a language and confirm to user."""
-        current_gender = self.tts.get_voice_gender(lang)
-        if current_gender == gender:
-            self.tts.say_wait(self._p("voice_already", gender))
-            return
-        self.tts.set_voice(lang, gender)
-        # Confirm in the language being changed
-        if lang == self._lang:
-            self.tts.say_wait(self._p("voice_changed", gender))
-        else:
-            # Confirm in current language
-            self.tts.say_wait(self._p("voice_changed", gender))
-        print(f"[VOICE] {lang.upper()} → {gender}")
+    def _has_command(self, text: str, command_list: list) -> bool:
+        """يتحقق ما إذا كانت الكلمة/الجملة موجودة كأمر كامل وليس كجزء من كلمة أخرى."""
+        for pattern in command_list:
+            regex = r'(?<!\w)' + re.escape(pattern) + r'(?!\w)'
+            if re.search(regex, text, re.IGNORECASE):
+                return True
+        return False
 
-    # ── Queue ─────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════
+    #  طابور الإعلانات
+    # ══════════════════════════════════════════════════════════════
 
     def _queue_announcement(self, msg: str):
-        self._announce_queue.append(msg)
+        """لا يضيف أي إعلان لو النظام نائم أو في وسط أمر."""
+        if not self._session_active:
+            return
+        if not self._auto_announce_enabled:
+            return
+        if self._command_in_progress or self.reg.active:
+            return
+        if self._announce_queue and self._announce_queue[-1] == msg:
+            return
+        # Keep only the newest automatic announcement so TTS cannot build a backlog.
+        self._announce_queue[:] = [msg]
         if not self._announcing:
             threading.Thread(target=self._flush_queue, daemon=True).start()
 
     def _flush_queue(self):
         self._announcing = True
         while self._announce_queue:
+            if self._command_in_progress or self.reg.active or not self._session_active:
+                self._announce_queue.clear()
+                break
             if self.tts.busy():
                 time.sleep(0.2)
                 continue
@@ -316,216 +281,472 @@ class LogicController:
             self.tts.wait(timeout=10.0)
         self._announcing = False
 
-    # ── Command listener ──────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════
+    #  الـ Listener الرئيسي
+    # ══════════════════════════════════════════════════════════════
 
-    def _start_command_listener(self):
+    def _start_listener(self):
         def _loop():
             while True:
                 try:
-                    if self.reg.active or self.tts.busy() or self._processing_command:
-                        time.sleep(0.3)
-                        continue
-
-                    text = self.stt.listen(timeout=4.0, phrase_limit=3.0)
-                    if not text or not is_wake_word(text):
-                        continue
-
-                    self._processing_command = True
-                    self._announce_queue.clear()
-                    self.tts.say_wait(PHRASES[self._lang]["yes"], pause=0.5)
-
-                    command = self.stt.listen(timeout=6.0, phrase_limit=5.0)
-                    if not command:
-                        self.tts.say_wait(PHRASES[self._lang]["no_speech"])
+                    if self._session_active:
+                        self._handle_session()
                     else:
-                        self._handle_command(command)
-
+                        self._wait_for_wake_word()
                 except Exception as e:
                     logger.debug(f"Listener: {e}")
                     time.sleep(0.5)
-                finally:
-                    self._processing_command = False
-
         threading.Thread(target=_loop, daemon=True).start()
 
-    # ── Command handler ───────────────────────────────────────────────────────
+    def _strip_wake_word(self, text: str) -> str:
+        """يستخرج كلمة التفعيل من بداية أو وسط الجملة ويرجع باقي الجملة كأمر."""
+        t = text.lower().strip()
+        for pattern in _WAKE_WORDS:
+            regex = r'(?<!\w)' + re.escape(pattern) + r'(?!\w)'
+            # استبدال أول تطابق بمسافة ثم تنظيف الفراغات
+            t_new, count = re.subn(regex, "", t, count=1)
+            if count > 0:
+                return t_new.strip()
+        return t
+
+    def _wait_for_wake_word(self):
+        """ينتظر wake word فقط — النظام صامت تماماً."""
+        text = self.stt.listen(timeout=5.0, phrase_limit=3.0, tts=self.tts)
+        if not text:
+            return
+        t = text.lower().strip()
+        if self._has_command(t, _WAKE_WORDS):
+            self._command_in_progress = True
+            self._announce_queue.clear()
+            self.tts.stop()
+            
+            # استخراج الأمر المصاحب لكلمة التفعيل (مثل: "فيجن مين ده")
+            cmd = self._strip_wake_word(t)
+            if cmd:
+                # يوجد أمر مصاحب، نقوم بتنفيذه مباشرة ونفعل الجلسة
+                self._session_active = True
+                logger.info(f"[Logic] Waking up with one-shot command: '{cmd}'")
+                try:
+                    self._handle_command(cmd)
+                except Exception as e:
+                    logger.error(f"Command execution error: {e}")
+                self._command_in_progress = False
+            else:
+                # قيلت كلمة التفعيل بمفردها، نفتح الجلسة
+                self._session_active = True
+                self.tts.say_wait(self._t("welcome"), pause=0.15)
+                self._command_in_progress = False
+
+    def _handle_session(self):
+        """الجلسة مفعلة — نعلن التعابير والأسماء، ونستقبل الأوامر المسبوقة بكلمة التفعيل لمنع الأخطاء."""
+        if self.reg.active or self.tts.busy():
+            time.sleep(0.3)
+            return
+
+        text = self.stt.listen(timeout=5.0, phrase_limit=4.0, tts=self.tts)
+        if not text:
+            return
+
+        t = text.lower().strip()
+        
+        # إغلاق الـ session صراحة (وداعا / اغلق) - نسمح بها بكلمة تفعيل أو بدونها للسهولة
+        if self._has_command(t, _CLOSE_WORDS):
+            self._command_in_progress = True
+            self._session_active = False
+            self._announce_queue.clear()
+            self.tts.stop()
+            self.tts.say_wait(self._t("goodbye"), pause=0.15)
+            self._command_in_progress = False
+            return
+
+        # للتأكد من أن الكلام موجه للنظام كأمر، يجب أن يحتوي على كلمة التفعيل (فيجن/vision)
+        if not self._has_command(t, _WAKE_WORDS):
+            # ليس أمراً موحداً بالمناداة، نتجاهله ككلام خلفية
+            return
+
+        cmd = self._strip_wake_word(t)
+        if not cmd:
+            # نطق كلمة التفعيل فقط، نرحب به مجدداً
+            self.tts.say_wait(self._t("welcome"), pause=0.15)
+            return
+
+        # تنفيذ الأمر
+        self._command_in_progress = True
+        self._announce_queue.clear()
+        self.tts.stop()
+        try:
+            self._handle_command(cmd)
+        except Exception as e:
+            logger.error(f"Command error: {e}")
+        finally:
+            self._command_in_progress = False
+            # الجلسة تظل مفعلة ليستمر النظام في إعلان الوجوه والمشاعر
+
+
+    # ══════════════════════════════════════════════════════════════
+    #  معالج الأوامر
+    # ══════════════════════════════════════════════════════════════
 
     def _handle_command(self, text: str):
-
-        # Language switch — highest priority
-        sw = detect_switch(text)
-        if sw is not None:
-            self._switch_language(sw)
+        # لو المستخدم نطق الـ wake word وهي الجلسة مفعلة أصلاً، نرحب بيه تاني بس
+        if self._has_command(text, _WAKE_WORDS):
+            self.tts.say_wait(self._t("welcome"), pause=0.15)
             return
 
-        # Voice gender change — second priority
-        vc = detect_voice_change(text)
-        if vc is not None:
-            self._change_voice(vc[0], vc[1])
+        # Determine target language from command content to prevent substring/word boundary conflicts
+        is_ar_cmd = self._has_command(text, ["arabic", "عربي", "بالعربي", "عربية", "تحويل عربي", "كلمني عربي"])
+        is_en_cmd = self._has_command(text, ["english", "انجليزي", "إنجليزي", "بالانجليزي", "تحويل انجليزي", "كلمني انجليزي"])
+
+        # ── تغيير جنس الصوت ──────────────────────────────────────────────────
+        if self._has_command(text, _AUTO_PAUSE_WORDS):
+            self._auto_announce_enabled = False
+            self._announce_queue.clear()
+            msg = "تم إيقاف قراءة الأشخاص والمشاعر." if self._lang() == "ar" else "Automatic person and emotion reading paused."
+            self.tts.say_wait(msg, pause=0.15)
             return
 
-        cmd = match_command(text)
+        if self._has_command(text, _AUTO_RESUME_WORDS):
+            self._auto_announce_enabled = True
+            msg = "تم تشغيل قراءة الأشخاص والمشاعر." if self._lang() == "ar" else "Automatic person and emotion reading resumed."
+            self.tts.say_wait(msg, pause=0.15)
+            return
 
-        if cmd == "register":
+        if self._has_command(text, _MALE_AR_WORDS) and not is_en_cmd:
+            if hasattr(self.tts, "set_voice"):
+                self.tts.set_voice("ar", "male")
+            self.tts.say_wait(self._t("voice_male_ar"))
+            return
+
+        if self._has_command(text, _FEMALE_AR_WORDS) and not is_en_cmd:
+            if hasattr(self.tts, "set_voice"):
+                self.tts.set_voice("ar", "female")
+            self.tts.say_wait(self._t("voice_female_ar"))
+            return
+
+        if self._has_command(text, _MALE_EN_WORDS) and not is_ar_cmd:
+            if hasattr(self.tts, "set_voice"):
+                self.tts.set_voice("en", "male")
+            self.tts.say_wait(self._t("voice_male_en"))
+            return
+
+        if self._has_command(text, _FEMALE_EN_WORDS) and not is_ar_cmd:
+            if hasattr(self.tts, "set_voice"):
+                self.tts.set_voice("en", "female")
+            self.tts.say_wait(self._t("voice_female_en"))
+            return
+
+        # ── تبديل اللغة ──────────────────────────────────────────────────────
+        if self._has_command(text, _AR_WORDS):
+            config.LANGUAGE = "ar"
+            if hasattr(self.tts, "set_language"):
+                self.tts.set_language("ar")
+            self.tts.say_wait(self._t("lang_ar"), pause=0.15)
+            return
+        if self._has_command(text, _EN_WORDS):
+            config.LANGUAGE = "en"
+            if hasattr(self.tts, "set_language"):
+                self.tts.set_language("en")
+            self.tts.say_wait(self._t("lang_en"), pause=0.15)
+            return
+
+        # ── تسجيل ────────────────────────────────────────────────────────────
+        if self._has_command(text, _IMPROVE_WORDS):
+            names = [n for n in self.db.names() if not n.startswith("__blocked__")]
+            if not names:
+                self.tts.say_wait(self._t("no_registered"))
+            elif self._current_name and self._current_name != "Unknown":
+                self.reg.start_improve(self._current_name)
+            else:
+                self.reg.start_improve()
+            return
+
+        if self._has_command(text, _REG_WORDS):
             if self._current_name is None:
-                self._say("no_person")
+                self.tts.say_wait(self._t("no_person"))
             elif self._current_name != "Unknown":
-                self._say("already_reg", self._current_name)
+                self.tts.say_wait(self._t("confirm_new_person", name=self._current_name), pause=0.15)
+                if self.stt.yes_no(tries=4, timeout=6.0, tts=self.tts) is True:
+                    self.reg.start_register()
+                else:
+                    self.tts.say_wait(self._t("already_reg", name=self._current_name))
             else:
                 self.reg.start_register()
             return
 
-        if cmd == "unblock":
-            self.reg.start_unblock()
+        # ── رفع حظر ──────────────────────────────────────────────────────
+        if self._has_command(text, _UNBLK_WORDS):
+            if self._lang() == "ar":
+                self.tts.say_wait("هل تريد رفع الحظر؟ قل نعم للتأكيد.", pause=0.15)
+            else:
+                self.tts.say_wait("Unblock a person? Say yes to confirm.", pause=0.15)
+            if self.stt.yes_no(tries=4, timeout=6.0, tts=self.tts) is True:
+                self.reg.start_unblock()
             return
 
-        if cmd == "block":
+        # ── حظر ──────────────────────────────────────────────────────
+        if self._has_command(text, _BLOCK_WORDS):
             if self._current_name is None:
-                self._say("no_person")
+                self.tts.say_wait(self._t("no_person"))
             elif self._current_name != "Unknown":
-                self._say("cannot_block_reg", self._current_name)
+                self.tts.say_wait(self._t("cannot_block"))
             else:
-                self.reg.start_block()
+                if self._lang() == "ar":
+                    self.tts.say_wait("هل تريد حظر هذا الشخص؟ قل نعم للتأكيد.", pause=0.15)
+                else:
+                    self.tts.say_wait("Block this person? Say yes to confirm.", pause=0.15)
+                if self.stt.yes_no(tries=4, timeout=6.0, tts=self.tts) is True:
+                    self.reg.start_block()
             return
 
-        if cmd == "who":
-            e = self._current_emotion or "Neutral"
-            if self._current_name in (None, "Unknown"):
-                self.tts.say_wait(self._p("who_unknown", e))
+        # ── من هذا ───────────────────────────────────────────────────────────
+        if self._has_command(text, _WHO_WORDS):
+            emo = self._emotion_str(self._current_emotion or "Neutral")
+            if self._current_name is None or self._current_name == "Unknown":
+                self.tts.say_wait(self._t("unknown_emotion", emotion=emo))
             else:
-                self.tts.say_wait(self._p("who_known", self._current_name, e))
+                self.tts.say_wait(self._t("known_emotion",
+                                          name=self._current_name, emotion=emo))
             return
 
-        if cmd == "delete":
-            self.reg.start_delete()
+        # ── مسح جميع الأسماء ──────────────────────────────────────────────────
+        if self._has_command(text, _CLEAR_ALL_WORDS):
+            if self._lang() == "ar":
+                self.tts.say_wait("هل أنت متأكد تماماً من رغبتك في حذف جميع الأسماء المسجلة؟ قل نعم للتأكيد.", pause=0.15)
+            else:
+                self.tts.say_wait("Are you absolutely sure you want to delete all registered names? Say yes to confirm.", pause=0.15)
+            
+            if self.stt.yes_no(tries=4, timeout=6.0, tts=self.tts) is True:
+                normal_names = [n for n in self.db.names() if not n.startswith("__blocked__")]
+                for name in normal_names:
+                    self.db.delete(name)
+                    self.on_deleted(name)
+                
+                if self._lang() == "ar":
+                    self.tts.say_wait("تم حذف جميع الأسماء بنجاح.")
+                else:
+                    self.tts.say_wait("All registered names have been successfully deleted.")
             return
 
-        if cmd == "list":
-            names = [n for n in self.db.names()
-                     if not n.startswith("__blocked__")]
+        # ── حذف ──────────────────────────────────────────────────────────────
+        if self._has_command(text, _DEL_WORDS):
+            if self._lang() == "ar":
+                self.tts.say_wait("هل تريد حذف شخص متسجل؟ قل نعم للتأكيد.", pause=0.15)
+            else:
+                self.tts.say_wait("Delete a registered person? Say yes to confirm.", pause=0.15)
+            if self.stt.yes_no(tries=4, timeout=6.0, tts=self.tts) is True:
+                self.reg.start_delete()
+            return
+
+        # ── قائمة ────────────────────────────────────────────────────────────
+        if self._has_command(text, _LIST_WORDS):
+            names = [n for n in self.db.names() if not n.startswith("__blocked__")]
             if names:
-                self.tts.say_wait(self._p("reg_list", names))
+                numbered_list = [f"{i+1} {name}" for i, name in enumerate(names)]
+                self.tts.say_wait(self._t("reg_list", names="، ".join(numbered_list)
+                                           if self._lang() == "ar" else ", ".join(numbered_list)))
             else:
-                self._say("no_registered")
+                self.tts.say_wait(self._t("no_registered"))
             return
 
-        if cmd == "quiet":
+        # ── صمت ──────────────────────────────────────────────────────────────
+        if self._has_command(text, _QUIET_WORDS):
             self._announce_queue.clear()
             self.tts.set_quiet(True)
-            self.tts.say_wait(PHRASES[self._lang]["quiet_on"])
+            self.tts.say_wait(self._t("quiet_on"))
             return
 
-        if cmd == "speak":
+        # ── استئناف ──────────────────────────────────────────────────────────
+        if self._has_command(text, _SPEAK_WORDS):
             self.tts.set_quiet(False)
-            self.tts.say_wait(PHRASES[self._lang]["quiet_off"])
+            self.tts.say_wait(self._t("quiet_off"))
             return
 
-        if cmd == "stop":
-            self._announce_queue.clear()
-            self.tts.stop()
-            return
+        self.tts.say_wait(self._t("not_recognized"))
 
-        self.tts.say_wait(PHRASES[self._lang]["cmd_not_found"])
-
-    # ── Process faces ─────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════
+    #  معالجة الوجوه (الحلقة الرئيسية)
+    # ══════════════════════════════════════════════════════════════
 
     def process_faces(self, faces_data: list, brightness: float, frame=None) -> str:
         now = time.time()
-
-        if frame is not None and self.reg.active:
-            self.reg.feed(frame)
-
+        # تحذير الإضاءة — مرة واحدة فقط
         if brightness < config.BRIGHTNESS_THRESHOLD and not self._low_light_warned:
             self._low_light_warned = True
-            self._queue_announcement(PHRASES[self._lang]["low_light"])
+            self._queue_announcement(self._t("low_light"))
 
         if not faces_data:
             self._current_name    = None
             self._current_emotion = None
+            # سجّل غياب كل الأشخاص في بفر الوجود
+            for name in list(self._presence_buf.keys()):
+                self._record_presence(name, False)
             return "no_face"
+
+        # سجّل الأشخاص الموجودين والغائبين
+        present_names = {fd[1] for fd in faces_data
+                         if not fd[1].startswith("__blocked__") and fd[1] != "Unknown"}
+        for name in list(self._presence_buf.keys()):
+            self._record_presence(name, name in present_names)
+        for name in present_names:
+            if name not in self._presence_buf:
+                self._record_presence(name, True)
 
         self._current_name    = faces_data[0][1]
         self._current_emotion = faces_data[0][3]
+
+        # لو النظام نائم أو في وسط أمر → لا إعلانات
+        if not self._session_active or self._command_in_progress or self.reg.active:
+            return "silent"
 
         for face_id, name, rec_score, emotion, emo_conf, box_area in faces_data:
             if name.startswith("__blocked__"):
                 continue
             if name != "Unknown":
-                self._process_known(name, rec_score, emotion, now)
+                # تحقق إن الشخص ده فعلاً موجود قدام الكاميرا
+                if self._is_person_confirmed(name):
+                    self._process_known(name, rec_score, emotion, now)
             else:
                 self._process_unknown(face_id, emotion, now)
 
         return "processed"
 
-    def process(self, face_id, name, rec_score, emotion,
-                emo_conf, brightness, frame=None):
+    def process(self, face_id, name, recognition_score, emotion,
+                emotion_confidence, brightness, frame=None):
         return self.process_faces(
-            [(face_id, name, rec_score, emotion, emo_conf, 1)],
+            [(face_id, name, recognition_score, emotion, emotion_confidence, 1)],
             brightness, frame
         )
+
+    # ══════════════════════════════════════════════════════════════
+    #  معالجة الأشخاص
+    # ══════════════════════════════════════════════════════════════
+
+    def _record_presence(self, name: str, present: bool):
+        """يسجّل ظهور أو غياب الشخص في بفر الوجود."""
+        from collections import deque
+        if name not in self._presence_buf:
+            self._presence_buf[name] = deque(maxlen=self._presence_n)
+        self._presence_buf[name].append(present)
+
+    def _is_person_confirmed(self, name: str) -> bool:
+        """
+        يتحقق إن الشخص موجود فعلاً — لازم يكون ظاهر
+        في self._presence_min من آخر self._presence_n فريمات.
+        """
+        buf = self._presence_buf.get(name)
+        if buf is None or len(buf) < self._presence_n:
+            return False
+        return sum(buf) >= self._presence_min
+
+    def _emotion_is_stable_for_announcement(self, key: str, emotion: str) -> bool:
+        last, count = self._emotion_candidate.get(key, ("", 0))
+        if emotion == last:
+            count += 1
+        else:
+            last, count = emotion, 1
+        self._emotion_candidate[key] = (last, count)
+        needed = getattr(config, "ANNOUNCE_EMOTION_STABLE_COUNT", 3)
+        return count >= needed
 
     def _process_known(self, name, score, emotion, now):
         last_seen     = self._last_seen.get(name, 0)
         just_returned = (now - last_seen) > config.UNKNOWN_REASK_TIMEOUT
         self._last_seen[name] = now
 
-        last_ann  = self._last_announced.get(name, 0)
-        last_emo  = self._last_emotion.get(name, "")
-        emo_changed = (emotion != last_emo)
+        last_announced = self._last_announced.get(name, 0)
+        last_emotion   = self._last_emotion.get(name, "")
+        emotion_changed = (emotion != last_emotion)
 
-        if not emo_changed and not just_returned:
-            return  # nothing changed — skip
-
-        # Smart cooldown:
-        # Big change (Neutral→Happy) → 1s cooldown — announce fast
-        # Same group change or repeat → normal cooldown (config)
-        if emo_changed and _is_big_change(last_emo, emotion):
-            cooldown = 1.0   # fast response for big changes
-        else:
-            cooldown = config.TTS_COOLDOWN_SEC
-
-        cooldown_ok = (now - last_ann) >= cooldown
-
-        if just_returned or (emo_changed and cooldown_ok):
-            self._last_announced[name] = now
-            self._last_emotion[name]   = emotion
-            self._queue_announcement(
-                self._build_emotion_msg(name, emotion, certain=(score >= 0.75))
-            )
-
-    def _process_unknown(self, face_id, emotion, now):
-        key       = f"unknown_{face_id}"
-        last_ann  = self._last_announced.get(key, 0)
-        last_emo  = self._last_emotion.get(key, "")
-        emo_changed = (emotion != last_emo)
-
-        if not emo_changed:
+        if not just_returned and not emotion_changed:
             return
 
-        # Smart cooldown — same logic as known person
-        if _is_big_change(last_emo, emotion):
-            cooldown = 1.0
-        else:
-            cooldown = config.TTS_COOLDOWN_SEC
+        if not self._emotion_is_stable_for_announcement(name, emotion):
+            return
 
-        if (now - last_ann) >= cooldown:
+        elapsed = now - last_announced
+
+        change_cooldown = getattr(config, "EMOTION_CHANGE_COOLDOWN", 0.8)
+        std_cooldown    = config.TTS_COOLDOWN_SEC
+        effective_cooldown = change_cooldown if emotion_changed else std_cooldown
+
+        cooldown_passed = elapsed >= effective_cooldown
+
+        if just_returned or (emotion_changed and cooldown_passed):
+            self._last_announced[name] = now
+            self._last_emotion[name] = emotion
+            emo = self._emotion_str(emotion)
+            if score >= 0.75:
+                msg = self._t("known_emotion", name=name, emotion=emo)
+            else:
+                msg = self._t("known_unsure", name=name, emotion=emo)
+            self._queue_announcement(msg)
+
+    def _process_unknown(self, face_id, emotion, now):
+        recent_known = [
+            seen_at for name, seen_at in self._last_seen.items()
+            if name != "unknown"
+        ]
+        suppress_for = getattr(config, "KNOWN_PERSON_UNKNOWN_SUPPRESS_SEC", 0.0)
+        if recent_known and (now - max(recent_known)) < suppress_for:
+            return
+
+        key             = "unknown"
+        last_announced  = self._last_announced.get(key, 0)
+        last_emotion    = self._last_emotion.get(key, "")
+        emotion_changed = (emotion != last_emotion)
+        if emotion_changed:
+            effective_cooldown = getattr(config, "EMOTION_CHANGE_COOLDOWN", 0.8)
+        else:
+            effective_cooldown = getattr(config, "UNKNOWN_ANNOUNCE_COOLDOWN", 20.0)
+        cooldown_passed = (now - last_announced) >= effective_cooldown
+
+        if emotion_changed and cooldown_passed and self._emotion_is_stable_for_announcement(key, emotion):
             self._last_announced[key] = now
             self._last_emotion[key]   = emotion
-            self._queue_announcement(self._build_unknown_msg(emotion))
+            self._queue_announcement(
+                self._t("unknown_emotion", emotion=self._emotion_str(emotion))
+            )
 
-    # ── Callbacks ─────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════
+    #  Callbacks
+    # ══════════════════════════════════════════════════════════════
 
-    def on_person_left(self, name: str):
+    def on_person_left(self, name):
         self._last_announced.pop(name, None)
         self._last_emotion.pop(name, None)
+        self._emotion_candidate.pop(name, None)
 
-    def on_registered(self, name: str):
-        emotion = self._current_emotion or "Neutral"
+    def on_registered(self, name):
+        emotion = self._emotion_str(self._current_emotion or "Neutral")
         self._announce_queue.clear()
-        self._queue_announcement(
-            self._build_emotion_msg(name, emotion, certain=True)
-        )
+        self._queue_announcement(self._t("known_emotion", name=name, emotion=emotion))
         t = time.time()
         self._last_announced[name] = t
         self._last_seen[name]      = t
-        self._last_emotion[name]   = emotion
+        self._last_emotion[name]   = self._current_emotion or "Neutral"
+
+    def on_deleted(self, name: str):
+        """
+        بعد حذف شخص — امسح كل بياناته من الـ memory فوراً.
+        """
+        self._last_announced.pop(name, None)
+        self._last_seen.pop(name, None)
+        self._last_emotion.pop(name, None)
+        self._emotion_candidate.pop(name, None)
+        self._presence_buf.pop(name, None)
+        self._announce_queue = [
+            m for m in self._announce_queue if name not in m
+        ]
+        logger.info(f"[Logic] Cleared all memory for deleted person: '{name}'")
+
+    def on_all_deleted(self):
+        """
+        بعد حذف جميع الأشخاص — امسح الذاكرة بالكامل فوراً.
+        """
+        self._last_announced.clear()
+        self._last_seen.clear()
+        self._last_emotion.clear()
+        self._emotion_candidate.clear()
+        self._presence_buf.clear()
+        self._announce_queue.clear()
+        logger.info("[Logic] Cleared all memory for all deleted persons.")

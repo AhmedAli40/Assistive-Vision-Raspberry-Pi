@@ -5,6 +5,7 @@ import cv2
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+from shared.draw_utils import draw_text_unicode
 
 
 def draw_results(frame, emotion, confidence, face_box, source):
@@ -38,12 +39,9 @@ def draw_results(frame, emotion, confidence, face_box, source):
     conf_txt = f"{confidence*100:.0f}%"
     src_txt  = "CAM" if source == "face" else "MIC"
 
-    cv2.putText(frame, emotion,  (10, h - bar_h + 25),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
-    cv2.putText(frame, conf_txt, (10, h - bar_h + 55),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
-    cv2.putText(frame, src_txt,  (w - 70, h - bar_h + 25),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+    frame = draw_text_unicode(frame, emotion, (10, h - bar_h + 25), 24, color)
+    frame = draw_text_unicode(frame, conf_txt, (10, h - bar_h + 55), 18, (200, 200, 200))
+    frame = draw_text_unicode(frame, src_txt, (w - 70, h - bar_h + 25), 18, color)
 
     return frame
 
@@ -51,9 +49,8 @@ def draw_results(frame, emotion, confidence, face_box, source):
 def draw_no_face(frame):
     """Draw message when no face is detected"""
     h, w = frame.shape[:2]
-    cv2.putText(frame, "No face detected",
-                (w//2 - 120, h//2),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 255), 2)
+    frame = draw_text_unicode(frame, "No face detected",
+                              (w//2 - 120, h//2), 22, (100, 100, 255))
     return frame
 
 

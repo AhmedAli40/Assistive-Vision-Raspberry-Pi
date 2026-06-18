@@ -61,5 +61,11 @@ class FaceDB:
 
     def _save(self):
         try:
-            with open(self.path, "wb") as f: pickle.dump(self._db, f)
+            tmp = self.path + ".tmp"
+            with open(tmp, "wb") as f: pickle.dump(self._db, f)
+            # Atomic replace — prevents corruption on crash/power loss
+            if os.path.exists(self.path):
+                os.replace(tmp, self.path)
+            else:
+                os.rename(tmp, self.path)
         except Exception as e: logger.error(f"DB save: {e}")

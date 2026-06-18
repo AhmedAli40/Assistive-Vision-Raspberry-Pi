@@ -7,11 +7,14 @@ blocked.json
 
 # Logs
 logs/
+*.log
 
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
+.mypy_cache/
 
 # Model files
 *.h5
@@ -20,13 +23,22 @@ __pycache__/
 *.pkl
 
 # Audio cache
+tts_cache/
 *.mp3
+*.wav
 
 # Environment
 .env
 *.env
+.venv/
+venv/
 
 # Training folders
 cnn_v3/
 cnn_v6/
 ensemble/
+
+# Office temporary files
+~$*
+*.doc
+*.docx

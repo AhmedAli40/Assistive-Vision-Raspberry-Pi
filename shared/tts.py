@@ -1,127 +1,93 @@
 """
-shared/tts.py - Unified TTS engine
-====================================
-Uses Microsoft Edge TTS (neural voices) — sounds like a real human.
-Free, no API key, works online.
-
-Arabic  voice: ar-EG-SalmaNeural   (female, Egyptian Arabic)
-English voice: en-US-AriaNeural    (female, natural US English)
-
-Fallback chain:
-  Edge TTS → gTTS → SAPI win32com → pyttsx3 → print
-
-Install once:
-  pip install edge-tts pygame
-
-Language switch via set_language("ar") / set_language("en").
+shared/tts.py — v8
+===================
+- set_language(lang) → يغير الصوت فوراً للعربي أو الإنجليزي
+- Edge TTS Neural: ar-EG-SalmaNeural / en-US-AriaNeural
+- Fallback: SAPI → pyttsx3
+- MP3 cache للجمل المتكررة
 """
-import threading
-import queue
-import time
-import os
-import tempfile
-import asyncio
-import logging
+import threading, queue, time, logging, os, asyncio, hashlib, sys, subprocess
+import config
 
 logger = logging.getLogger(__name__)
-_STOP = object()
+_STOP  = object()
 
-# ── Voice catalog ────────────────────────────────────────────────────────────
-# All available voices per language + gender
-VOICE_CATALOG = {
-    "ar": {
-        "female": [
-            "ar-EG-SalmaNeural",      # مصري أنثى
-            "ar-SA-ZariyahNeural",    # سعودي أنثى
-        ],
-        "male": [
-            "ar-EG-ShakirNeural",     # مصري ذكر
-            "ar-SA-HamedNeural",      # سعودي ذكر
-        ],
-    },
-    "en": {
-        "female": [
-            "en-US-AriaNeural",       # US English female
-            "en-GB-SoniaNeural",      # British English female
-        ],
-        "male": [
-            "en-US-GuyNeural",        # US English male
-            "en-GB-RyanNeural",       # British English male
-        ],
-    },
+VOICES = {
+    ("ar", "female"): "ar-EG-SalmaNeural",
+    ("ar", "male"):   "ar-EG-ShakirNeural",
+    ("en", "female"): "en-US-AriaNeural",
+    ("en", "male"):   "en-US-GuyNeural",
 }
 
-# Current active voices — default: female for both
-EDGE_VOICES = {
-    "ar": VOICE_CATALOG["ar"]["female"][0],   # ar-EG-SalmaNeural
-    "en": VOICE_CATALOG["en"]["female"][0],   # en-US-AriaNeural
+# الصوت الافتراضي لكل لغة
+VOICES_DEFAULT = {
+    "ar": ("ar", "female"),
+    "en": ("en", "female"),
 }
+
+CACHE_DIR = "tts_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 class TTS:
     def __init__(self, rate: int = 150):
-        self._rate  = rate
-        self._lang  = "en"
-        self._quiet = False
-
-        self._q     = queue.Queue()
-        self._done  = threading.Event()
+        self._q      = queue.Queue()
+        self._done   = threading.Event()
         self._done.set()
-        self._ready = threading.Event()
+        self._rate   = rate
+        self._ready  = threading.Event()
+        self._quiet  = False
+        self._mixer_lock = threading.Lock()
 
-        self._fn_lock  = threading.Lock()
-        self._speak_fn = None
+        # اللغة والجنس الحاليين
+        self._lang   = getattr(config, "LANGUAGE", "en")
+        self._gender = "female"
+        self._voice  = VOICES[VOICES_DEFAULT[self._lang]]
+
+        # Edge TTS متاح؟
+        self._edge_ok = False
+        self._pygame_ok = False
+        self._check_edge()
+
+        # SAPI fallback
+        self._sapi_speaker = None
 
         t = threading.Thread(target=self._worker, daemon=True)
         t.start()
-        self._ready.wait(timeout=15)
+        self._ready.wait(timeout=10)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    def _check_edge(self):
+        try:
+            import edge_tts
+            import pygame
+            pygame.mixer.init()
+            self._edge_ok   = True
+            self._pygame_ok = True
+        except Exception:
+            self._edge_ok = False
+
+    # ══════════════════════════════════════════════════════
+    #  Public API
+    # ══════════════════════════════════════════════════════
 
     def set_language(self, lang: str):
-        self._lang = lang
-        print(f"[TTS] Language → {lang.upper()}")
-        threading.Thread(target=self._rebuild_fn, daemon=True).start()
+        """يغير لغة الصوت مع الاحتفاظ بالجنس الحالي."""
+        self._lang  = lang
+        key = (lang, self._gender)
+        self._voice = VOICES.get(key, VOICES[VOICES_DEFAULT.get(lang, ("en","female"))])
+        print(f"[TTS] Voice → {self._voice}")
 
-    def set_voice(self, lang: str, gender: str) -> str:
-        """
-        Switch voice for a language.
-        lang:   'ar' or 'en'
-        gender: 'male' or 'female'
-        Returns the new voice name for confirmation.
-        """
-        gender = gender.strip().lower()
-        if gender not in ("male", "female"):
-            return ""
-        if lang not in VOICE_CATALOG:
-            return ""
-
-        voices = VOICE_CATALOG[lang][gender]
-        new_voice = voices[0]   # pick first option
-        EDGE_VOICES[lang] = new_voice
-        print(f"[TTS] Voice changed: {lang.upper()} → {new_voice}")
-
-        # Rebuild engine if this is the active language
-        if lang == self._lang:
-            threading.Thread(target=self._rebuild_fn, daemon=True).start()
-
-        return new_voice
-
-    def get_voice_gender(self, lang: str) -> str:
-        """Return current gender for a language: 'female' or 'male'."""
-        current = EDGE_VOICES.get(lang, "")
-        for gender, voices in VOICE_CATALOG.get(lang, {}).items():
-            if current in voices:
-                return gender
-        return "female"
-
-    def _rebuild_fn(self):
-        fn = self._build_speak_fn(self._lang)
-        with self._fn_lock:
-            self._speak_fn = fn
-        print(f"[TTS] Engine ready for {self._lang.upper()}")
+    def set_voice(self, lang: str, gender: str):
+        """يغير لغة الصوت وجنسه معاً."""
+        self._lang   = lang
+        self._gender = gender
+        config.LANGUAGE = lang
+        key = (lang, gender)
+        self._voice = VOICES.get(key, VOICES[("en", "female")])
+        print(f"[TTS] Voice → {self._voice}")
 
     def say(self, text: str):
+        """غير blocking — بيتخطى لو quiet mode."""
         if self._quiet:
             print(f"[TTS-QUIET] {text}")
             return
@@ -129,26 +95,32 @@ class TTS:
         self._done.clear()
         self._q.put(text)
 
-    def say_wait(self, text: str, pause: float = 1.2):
+    def say_wait(self, text: str, pause: float = 0.05):
+        """Blocking — بيشتغل حتى في quiet mode (رسائل النظام)."""
         print(f"[TTS] {text}")
         self._done.clear()
         self._q.put(text)
         self._done.wait(timeout=30)
-        time.sleep(pause)
+        time.sleep(max(0.0, pause))
 
     def stop(self):
         while not self._q.empty():
             try: self._q.get_nowait()
             except: pass
         self._done.set()
+        if self._pygame_ok:
+            try:
+                import pygame
+                with self._mixer_lock:
+                    pygame.mixer.music.stop()
+            except Exception:
+                pass
 
     def set_quiet(self, quiet: bool):
         self._quiet = quiet
         if quiet:
             self.stop()
-            print("[TTS] Quiet ON")
-        else:
-            print("[TTS] Quiet OFF")
+        print(f"[TTS] Quiet={'ON' if quiet else 'OFF'}")
 
     def is_quiet(self) -> bool:
         return self._quiet
@@ -159,12 +131,12 @@ class TTS:
     def busy(self) -> bool:
         return not self._done.is_set()
 
-    # ── Worker ────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════
+    #  Worker
+    # ══════════════════════════════════════════════════════
 
     def _worker(self):
-        fn = self._build_speak_fn(self._lang)
-        with self._fn_lock:
-            self._speak_fn = fn
+        self._init_sapi()
         self._ready.set()
 
         while True:
@@ -177,218 +149,188 @@ class TTS:
             if text is _STOP:
                 break
 
-            with self._fn_lock:
-                fn = self._speak_fn
-
             try:
-                fn(text)
+                self._speak(text)
             except Exception as e:
-                logger.warning(f"[TTS] error: {e}")
-                try:
-                    new_fn = self._build_speak_fn(self._lang)
-                    with self._fn_lock:
-                        self._speak_fn = new_fn
-                    new_fn(text)
-                except Exception as e2:
-                    logger.error(f"[TTS] retry failed: {e2}")
+                logger.warning(f"[TTS] speak error: {e}")
 
             if self._q.empty():
                 self._done.set()
 
-    # ── Engine builder ────────────────────────────────────────────────────────
+    def _speak(self, text: str):
+        # Edge TTS أولاً
+        if self._edge_ok:
+            if self._speak_edge(text):
+                return
+        # SAPI fallback (Windows only)
+        if self._sapi_speaker:
+            self._speak_sapi(text)
+            return
+        # espeak fallback (Linux / Raspberry Pi)
+        if sys.platform != 'win32':
+            self._speak_espeak(text)
+            return
+        # print فقط
+        print(f"[TTS-PRINT] {text}")
 
-    def _build_speak_fn(self, lang: str):
-        fn = self._try_edge_tts(lang)
-        if fn: return fn
-        fn = self._try_gtts(lang)
-        if fn: return fn
-        fn = self._try_sapi(lang)
-        if fn: return fn
-        fn = self._try_pyttsx3()
-        if fn: return fn
-        return self._speak_print
+    # ══════════════════════════════════════════════════════
+    #  Edge TTS
+    # ══════════════════════════════════════════════════════
 
-    # ── Method 1: Edge TTS (neural, human-like) ─────────────────────────────────
-    # Uses an in-memory mp3 cache — repeated phrases play instantly.
-    # Falls back to SAPI immediately if network is slow (>3s timeout).
-
-    def _try_edge_tts(self, lang: str):
+    def _speak_edge(self, text: str) -> bool:
         try:
+            import pygame
             import edge_tts
-            import pygame
-            pygame.mixer.init()
-            voice = EDGE_VOICES.get(lang, EDGE_VOICES["en"])
-            print(f"[TTS] Using Edge TTS neural voice: {voice}")
 
-            # Per-voice mp3 cache {text: mp3_path}
-            _cache = {}
-            _cache_lock = threading.Lock()
+            # cache key
+            key  = hashlib.md5(f"{self._voice}_{text}".encode()).hexdigest()
+            path = os.path.join(CACHE_DIR, f"{key}.mp3")
 
-            def _get_cached(text, _voice=voice):
-                """Return cached mp3 path or generate and cache it."""
-                with _cache_lock:
-                    path = _cache.get(text)
-                    if path and os.path.exists(path):
-                        return path
+            # Check if file exists and has size > 0 (prevents loading corrupted/empty cache files)
+            if not os.path.exists(path) or os.path.getsize(path) == 0:
+                if os.path.exists(path):
+                    try: os.remove(path)
+                    except: pass
+                # توليد الملف
+                ok = self._edge_generate(text, path)
+                if not ok:
+                    if os.path.exists(path):
+                        try: os.remove(path)
+                        except: pass
+                    return False
 
-                # Generate in temp file
-                tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-                tmp.close()
+            # تشغيل الملف
+            with self._mixer_lock:
+                pygame.mixer.music.load(path)
+                pygame.mixer.music.play()
+            
+            while True:
+                with self._mixer_lock:
+                    is_busy = pygame.mixer.music.get_busy()
+                if not is_busy:
+                    break
+                time.sleep(0.05)
+            return True
 
-                async def _synth():
-                    comm = edge_tts.Communicate(text, _voice)
-                    await comm.save(tmp.name)
-
-                asyncio.run(_synth())
-
-                # Cache up to 60 phrases — evict oldest if full
-                with _cache_lock:
-                    if len(_cache) >= 60:
-                        oldest = next(iter(_cache))
-                        try: os.unlink(_cache[oldest])
-                        except Exception: pass
-                        del _cache[oldest]
-                    _cache[text] = tmp.name
-
-                return tmp.name
-
-            def _speak(text, _voice=voice):
-                try:
-                    # Try Edge TTS with 4s timeout
-                    result = [None]
-                    error  = [None]
-
-                    def _gen():
-                        try:
-                            result[0] = _get_cached(text, _voice)
-                        except Exception as e:
-                            error[0] = e
-
-                    t = threading.Thread(target=_gen, daemon=True)
-                    t.start()
-                    t.join(timeout=4.0)   # max 4 seconds to generate
-
-                    if result[0] and os.path.exists(result[0]):
-                        pygame.mixer.music.load(result[0])
-                        pygame.mixer.music.play()
-                        while pygame.mixer.music.get_busy():
-                            time.sleep(0.05)
-                        pygame.mixer.music.unload()
-                    else:
-                        # Timeout or error — raise to trigger SAPI fallback
-                        raise RuntimeError(
-                            f"Edge TTS timeout or failed: {error[0]}"
-                        )
-                except Exception as e:
-                    logger.warning(f"[TTS] Edge TTS: {e} — falling back to SAPI")
-                    # Immediate SAPI fallback so user hears something now
-                    sapi_fn = self._try_sapi(lang)
-                    if sapi_fn:
-                        sapi_fn(text)
-                        # Swap engine to SAPI permanently if Edge TTS keeps failing
-                        with self._fn_lock:
-                            self._speak_fn = sapi_fn
-                        print("[TTS] Switched to SAPI (Edge TTS unavailable)")
-
-            return _speak
-        except ImportError:
-            print("[TTS] edge-tts/pygame not installed — run: pip install edge-tts pygame")
-            return None
         except Exception as e:
-            logger.debug(f"[TTS] Edge TTS init: {e}")
-            return None
+            print(f"[TTS] Edge TTS error: {e}")
+            return False
 
-    # ── Method 2: gTTS fallback ───────────────────────────────────────────────
+    def _edge_generate(self, text: str, path: str) -> bool:
+        """يولد ملف MP3 من Edge TTS مع timeout 5 ثواني."""
+        import edge_tts
 
-    def _try_gtts(self, lang: str):
-        try:
-            from gtts import gTTS
-            import pygame
-            pygame.mixer.init()
-            gtts_lang = "ar" if lang == "ar" else "en"
-            print(f"[TTS] Using gTTS fallback ({gtts_lang})")
+        result = [False]
 
-            def _speak(text, _lang=gtts_lang):
-                try:
-                    tts = gTTS(text=text, lang=_lang, slow=False)
-                    tmp = tempfile.NamedTemporaryFile(
-                        suffix=".mp3", delete=False
-                    )
-                    tmp.close()
-                    tts.save(tmp.name)
-                    pygame.mixer.music.load(tmp.name)
-                    pygame.mixer.music.play()
-                    while pygame.mixer.music.get_busy():
-                        time.sleep(0.05)
-                    pygame.mixer.music.unload()
-                    try:
-                        os.unlink(tmp.name)
-                    except Exception:
-                        pass
-                except Exception as e:
-                    logger.warning(f"[TTS] gTTS play: {e}")
-                    raise
+        async def _gen():
+            try:
+                comm = edge_tts.Communicate(text, self._voice)
+                await comm.save(path)
+                result[0] = True
+            except Exception as e:
+                print(f"[TTS] Edge generate error: {e}")
 
-            return _speak
-        except ImportError:
-            return None
-        except Exception as e:
-            logger.debug(f"[TTS] gTTS: {e}")
-            return None
+        def _run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(_gen())
+            loop.close()
 
-    # ── Method 3: SAPI win32com ───────────────────────────────────────────────
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=5.0)
 
-    def _try_sapi(self, lang: str):
+        if not result[0]:
+            print("[TTS] Edge TTS timeout — falling back to SAPI")
+            return False
+        return True
+
+    # ══════════════════════════════════════════════════════
+    #  SAPI
+    # ══════════════════════════════════════════════════════
+
+    def _init_sapi(self):
+        if sys.platform != 'win32':
+            self._sapi_speaker = None
+            return
         try:
             import pythoncom
             pythoncom.CoInitialize()
             import win32com.client
-            speaker = win32com.client.Dispatch("SAPI.SpVoice")
-            voices  = speaker.GetVoices()
-
-            keywords = (
-                ["arabic", "naayf", "hoda", "ar-", "ar_"]
-                if lang == "ar"
-                else ["english", "david", "zira", "mark", "en-us"]
-            )
-            for i in range(voices.Count):
-                v = voices.Item(i)
-                d = v.GetDescription().lower()
-                if any(k in d for k in keywords):
-                    speaker.Voice = v
-                    print(f"[TTS] SAPI: {v.GetDescription()}")
-                    break
-
-            speaker.Rate = max(-5, min(5, int((self._rate - 150) / 20)))
-
-            def _speak(text, _s=speaker):
-                _s.Speak(text)
-            return _speak
+            self._sapi_speaker = win32com.client.Dispatch("SAPI.SpVoice")
+            sapi_rate = max(-5, min(5, int((self._rate - 150) / 20)))
+            self._sapi_speaker.Rate = sapi_rate
+            print(f"[TTS] SAPI ready")
         except Exception as e:
-            logger.debug(f"[TTS] SAPI: {e}")
-            return None
+            logger.warning(f"[TTS] SAPI init failed: {e}")
+            self._sapi_speaker = None
 
-    # ── Method 4: pyttsx3 ────────────────────────────────────────────────────
-
-    def _try_pyttsx3(self):
+    def _speak_sapi(self, text: str):
         try:
-            import pythoncom
-            pythoncom.CoInitialize()
-            import pyttsx3
-            eng = pyttsx3.init()
-            eng.setProperty("rate", self._rate)
-            print("[TTS] Using pyttsx3")
+            lang   = self._lang
+            gender = self._gender
+            voices = self._sapi_speaker.GetVoices()
+            chosen = None
 
-            def _speak(text, _e=eng):
-                _e.say(text)
-                _e.runAndWait()
-            return _speak
+            # أسماء أصوات SAPI الشائعة
+            male_ar   = ["naayf", "hamed"]
+            female_ar = ["hoda", "salma"]
+            male_en   = ["david", "mark", "guy", "richard"]
+            female_en = ["zira", "aria", "hazel", "susan"]
+
+            # Try to match BOTH language and gender first
+            for i in range(voices.Count):
+                v    = voices.Item(i)
+                desc = v.GetDescription().lower()
+                if lang == "ar":
+                    pool = male_ar if gender == "male" else female_ar
+                    if any(n in desc for n in pool):
+                        chosen = v
+                        break
+                else:
+                    pool = male_en if gender == "male" else female_en
+                    if any(n in desc for n in pool):
+                        chosen = v
+                        break
+
+            # If not found, fall back to matching language only (regardless of gender)
+            if not chosen:
+                for i in range(voices.Count):
+                    v    = voices.Item(i)
+                    desc = v.GetDescription().lower()
+                    if lang == "ar" and ("arabic" in desc or any(n in desc for n in male_ar + female_ar)):
+                        chosen = v
+                        break
+                    elif lang != "ar" and ("english" in desc or any(n in desc for n in male_en + female_en)):
+                        chosen = v
+                        break
+
+            if chosen:
+                self._sapi_speaker.Voice = chosen
+            self._sapi_speaker.Speak(text)
         except Exception as e:
-            logger.debug(f"[TTS] pyttsx3: {e}")
-            return None
+            logger.warning(f"[TTS] SAPI speak error: {e}")
 
-    # ── Method 5: print only ──────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════
+    #  espeak (Linux / Raspberry Pi fallback)
+    # ══════════════════════════════════════════════════════
 
-    @staticmethod
-    def _speak_print(text):
-        print(f"[TTS-PRINT] {text}")
+    def _speak_espeak(self, text: str):
+        """Linux fallback: uses espeak-ng or espeak for speech output."""
+        try:
+            lang_code = "ar" if self._lang == "ar" else "en"
+            # Try espeak-ng first, then espeak
+            for cmd in ("espeak-ng", "espeak"):
+                try:
+                    subprocess.run(
+                        [cmd, "-v", lang_code, text],
+                        timeout=10,
+                        capture_output=True,
+                    )
+                    return
+                except FileNotFoundError:
+                    continue
+            print(f"[TTS-PRINT] {text}")
+        except Exception as e:
+            logger.warning(f"[TTS] espeak error: {e}")
+            print(f"[TTS-PRINT] {text}")

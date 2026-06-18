@@ -32,21 +32,39 @@ import numpy as np
 from datetime import datetime
 from collections import deque, Counter
 
+# ── Fix: UTF-8 output on Windows to prevent UnicodeEncodeError ────────────────
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
+from shared.model_runtime import TFLiteEmotionModel
 
 # ── Load emotion model BEFORE DeepFace (critical for keras compatibility) ─────
 os.environ['TF_USE_LEGACY_KERAS'] = '0'
-import tensorflow as _tf
 _emotion_model_global = None
-if os.path.exists(config.MODEL_PATH):
+if getattr(config, "USE_TFLITE_EMOTION", False) and os.path.exists(config.TFLITE_MODEL_PATH):
+    try:
+        _emotion_model_global = TFLiteEmotionModel(config.TFLITE_MODEL_PATH)
+        print(f"[Model] Loaded TFLite emotion model: {config.TFLITE_MODEL_PATH}")
+    except Exception as e:
+        print(f"[Model] TFLite load failed: {e}")
+        print("[Model] Falling back to Keras emotion model.")
+
+if _emotion_model_global is None and os.path.exists(config.MODEL_PATH):
+    import tensorflow as _tf
     _emotion_model_global = _tf.keras.models.load_model(
         config.MODEL_PATH, compile=False
     )
-    print('[Model] Loaded successfully before DeepFace')
-else:
-    print(f'ERROR: Model not found at {config.MODEL_PATH}')
+    print("[Model] Loaded Keras emotion model before DeepFace")
+
+if _emotion_model_global is None:
+    print(f"ERROR: Model not found at {config.MODEL_PATH} or {config.TFLITE_MODEL_PATH}")
     sys.exit(1)
 
 # ── Shared TTS ────────────────────────────────────────────────────────────────
@@ -58,6 +76,7 @@ from face.face_db        import FaceDB
 from face.face_processor import FaceProcessor
 from face.registration   import RegFlow
 from shared.stt          import STT
+from shared.draw_utils   import draw_text_unicode
 
 # ── Emotion Detection ─────────────────────────────────────────────────────────
 from emotion.audio_detector import AudioEmotionDetector
@@ -70,39 +89,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  TTS Cache — caches generated audio for repeated phrases
-# ─────────────────────────────────────────────────────────────────────────────
-
-class _TTSCache:
-    """Simple LRU-style cache for Edge TTS mp3 files."""
-    def __init__(self, max_size: int = 50):
-        self._cache   = {}           # phrase → mp3 path
-        self._max     = max_size
-        self._enabled = getattr(config, 'TTS_CACHE_ENABLED', True)
-
-    def get(self, phrase: str):
-        if not self._enabled: return None
-        path = self._cache.get(phrase)
-        if path and os.path.exists(path):
-            return path
-        return None
-
-    def put(self, phrase: str, path: str):
-        if not self._enabled: return
-        if len(self._cache) >= self._max:
-            # Remove oldest entry
-            oldest = next(iter(self._cache))
-            try: os.unlink(self._cache[oldest])
-            except Exception: pass
-            del self._cache[oldest]
-        self._cache[phrase] = path
-
-    def clear(self):
-        for path in self._cache.values():
-            try: os.unlink(path)
-            except Exception: pass
-        self._cache.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -144,10 +130,6 @@ class AssistiveVisionSystem:
             face_db        = self._face_db,
         )
 
-        # ── TTS Cache ──────────────────────────────────────────────────────
-        self._tts_cache = _TTSCache(
-            max_size=getattr(config, 'TTS_CACHE_MAX', 50)
-        )
 
         # ── State ──────────────────────────────────────────────────────────
         self._frame_count        = 0
@@ -268,6 +250,12 @@ class AssistiveVisionSystem:
             return most_common
         return raw_idx   # not stable yet — use raw
 
+    def _cleanup_stale_histories(self, active_face_ids: set):
+        """Remove emotion history for faces no longer in frame — prevents memory leak."""
+        stale = [k for k in self._emotion_history if k not in active_face_ids]
+        for k in stale:
+            del self._emotion_history[k]
+
     # ── Predict emotion (single face input) ───────────────────────────────────
 
     def _predict_emotion(self, face_input: np.ndarray) -> tuple:
@@ -369,20 +357,17 @@ class AssistiveVisionSystem:
             name, rec_score = "Unknown", 0.0
             emb = self._face_proc.embed(frame, box)
             if emb is not None:
-                # Temporarily apply adaptive threshold
-                original_thresh = self._face_proc.threshold
-                self._face_proc.threshold = face_thresh
-                if self._face_proc.identify_blocked(emb, db):
-                    self._face_proc.threshold = original_thresh
-                    block_label = next(
-                        (b for b in db if b.startswith("__blocked__")),
-                        "__blocked__unknown"
-                    )
+                # Use local threshold to avoid race condition with main thread
+                local_thresh = face_thresh
+                blocked_match = self._face_proc.identify_blocked(emb, db)
+                if blocked_match:
                     results.append((
                         self._face_proc._grid_key(box),
-                        block_label, 1.0, "N/A", 0.0, box, area
+                        blocked_match, 1.0, "N/A", 0.0, box, area
                     ))
                     continue
+                original_thresh = self._face_proc.threshold
+                self._face_proc.threshold = local_thresh
                 name, rec_score = self._face_proc.identify(emb, db, box)
                 self._face_proc.threshold = original_thresh
 
@@ -402,6 +387,7 @@ class AssistiveVisionSystem:
         # ── Batch emotion prediction [OPT #3] ─────────────────────────────
         # Collect all valid face inputs into one batch
         valid_indices = [i for i, fi in enumerate(face_inputs) if fi is not None]
+        final_preds = {}   # ← must init here to avoid UnboundLocalError
 
         if valid_indices:
             # Build batch
@@ -414,7 +400,6 @@ class AssistiveVisionSystem:
 
             # Check which faces need TTA (low confidence)
             tta_threshold = getattr(config, 'TTA_CONFIDENCE_THRESHOLD', 0.65)
-            final_preds = {}
 
             for local_i, orig_i in enumerate(valid_indices):
                 preds = batch_preds[local_i]
@@ -442,6 +427,12 @@ class AssistiveVisionSystem:
 
         # Sort by area descending (closest first)
         results.sort(key=lambda r: r[6], reverse=True)
+
+        # Cleanup stale emotion histories every 500 frames
+        if self._frame_count % 500 == 0:
+            active_ids = {r[0] for r in results}
+            self._cleanup_stale_histories(active_ids)
+
         return results
 
     # ── Audio Fallback ────────────────────────────────────────────────────────
@@ -486,10 +477,27 @@ class AssistiveVisionSystem:
                 # Check registration result
                 reg_result = self._reg.result()
                 if reg_result and reg_result != "PENDING":
-                    if isinstance(reg_result, str) and \
-                       reg_result.startswith("registered:"):
-                        name = reg_result.replace("registered:", "")
-                        self._logic.on_registered(name)
+                    if isinstance(reg_result, str):
+                        if reg_result.startswith("registered:"):
+                            name = reg_result.replace("registered:", "")
+                            self._logic.on_registered(name)
+                        elif reg_result.startswith("improved:"):
+                            name = reg_result.replace("improved:", "")
+                            self._logic.on_registered(name)
+                            self._face_proc.reset()
+                        elif reg_result.startswith("deleted:"):
+                            name = reg_result.replace("deleted:", "")
+                            if name == "__all__":
+                                if hasattr(self._logic, "on_all_deleted"):
+                                    self._logic.on_all_deleted()
+                            else:
+                                self._logic.on_deleted(name)
+                            self._face_proc.reset()   # امسح vote buffer فوراً
+                        elif reg_result.startswith("blocked:"):
+                            name = reg_result.replace("blocked:", "")
+                            self._face_proc.reset()   # امسح vote buffer
+                        elif reg_result.startswith("unblocked:"):
+                            self._face_proc.reset()
 
                 # ── [OPT #5] Adaptive inference rate ─────────────────────
                 inference_n = self._get_inference_n()
@@ -504,11 +512,12 @@ class AssistiveVisionSystem:
                 if result is not None:
                     faces_data = []
 
-                    # [OPT #6] Audio fallback only for closest face
+                    # [OPT #6] Audio fallback only for closest face (prevents conflicts when STT is listening)
                     closest_needs_audio = (
                         result and
                         not result[0][1].startswith("__blocked__") and
-                        result[0][4] < threshold
+                        result[0][4] < threshold and
+                        not self._stt.is_listening
                     )
                     if closest_needs_audio:
                         self._audio_det.analyze_async(self._on_audio_result)
@@ -541,6 +550,9 @@ class AssistiveVisionSystem:
                         else:
                             self._stable_frames    = 0
                             self._last_emotion_set = emotion
+                    else:
+                        self._current_face_box = None
+                        self._current_name     = "Unknown"
 
                     # Send to Logic Controller
                     self._logic.process_faces(
@@ -561,6 +573,17 @@ class AssistiveVisionSystem:
 
                 # ── Draw ─────────────────────────────────────────────────
                 if config.SHOW_WINDOW:
+                    # Draw visual subtitle guidance during active flows (e.g. registration, delete)
+                    if self._reg.active:
+                        inst = getattr(self._reg, "current_instruction", "")
+                        if inst:
+                            h_f, w_f = frame.shape[:2]
+                            banner_h = 50
+                            overlay = frame.copy()
+                            cv2.rectangle(overlay, (0, 0), (w_f, banner_h), (20, 20, 20), -1)
+                            cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+                            frame = draw_text_unicode(frame, inst, (20, 12), 18, (0, 255, 255))
+
                     if self._current_face_box is not None:
                         # [FIX #10] Use name + emotion properly
                         frame = draw_results(
@@ -574,10 +597,9 @@ class AssistiveVisionSystem:
                         label = self._current_name
                         if self._current_emotion not in ("N/A", ""):
                             label += f" | {self._current_emotion}"
-                        cv2.putText(
-                            frame, label, (x, y - 35),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                            (255, 255, 0), 2
+                        frame = draw_text_unicode(
+                            frame, label, (x, y - 10),
+                            20, (255, 255, 0)
                         )
                     else:
                         frame = draw_no_face(frame)
@@ -594,7 +616,6 @@ class AssistiveVisionSystem:
         finally:
             cap.release()
             cv2.destroyAllWindows()
-            self._tts_cache.clear()
             if self._log_file:
                 self._log_file.close()
             print("System closed.")

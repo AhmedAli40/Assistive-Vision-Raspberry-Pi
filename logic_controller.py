@@ -12,6 +12,8 @@ import time
 import threading
 import logging
 import re
+import difflib
+import unicodedata
 import config
 
 logger = logging.getLogger(__name__)
@@ -239,11 +241,75 @@ class LogicController:
             return EMOTIONS_AR.get(emotion, emotion)
         return emotion
 
+    def _normalize_command(self, text: str) -> str:
+        t = unicodedata.normalize("NFKC", str(text or "")).lower().strip()
+        t = re.sub(r"[\u064b-\u065f\u0670\u0640]", "", t)
+        t = t.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789"))
+        for src, dst in {
+            "أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا",
+            "ى": "ي", "ة": "ه", "ؤ": "و", "ئ": "ي",
+        }.items():
+            t = t.replace(src, dst)
+        t = re.sub(r"[^\w\s\u0600-\u06ff]", " ", t)
+        return re.sub(r"\s+", " ", t).strip()
+
+    def _similar_enough(self, text: str, pattern: str) -> bool:
+        t = self._normalize_command(text)
+        p = self._normalize_command(pattern)
+        if not t or not p:
+            return False
+        if t == p:
+            return True
+        if len(p) <= 3 or len(t) <= 3:
+            return difflib.SequenceMatcher(None, t, p).ratio() >= 0.85
+
+        def has_marker(value: str, markers: tuple[str, ...]) -> bool:
+            for marker in markers:
+                m = self._normalize_command(marker)
+                if re.fullmatch(r"[a-z0-9_]+", m):
+                    if re.search(rf"\b{re.escape(m)}\b", value):
+                        return True
+                elif m in value:
+                    return True
+            return False
+
+        protected_groups = (
+            (("mute",), ("unmute",)),
+            (("block", "احظر"), ("unblock", "فك", "ارفع", "رفع")),
+            (("save", "احفظ", "حفظ"), ("block", "احظر", "حظر")),
+            (("male", "رجالي", "راجل", "رجل"), ("female", "نسائي", "بنت", "انثي", "انثى")),
+        )
+        for left_group, right_group in protected_groups:
+            if (
+                has_marker(t, left_group) and has_marker(p, right_group)
+                or has_marker(t, right_group) and has_marker(p, left_group)
+            ):
+                return False
+
+        if difflib.SequenceMatcher(None, t, p).ratio() >= 0.84:
+            return True
+
+        t_words = t.split()
+        p_words = p.split()
+        if len(p_words) == 1:
+            return any(difflib.SequenceMatcher(None, word, p).ratio() >= 0.84 for word in t_words)
+
+        if len(t_words) >= len(p_words):
+            for i in range(0, len(t_words) - len(p_words) + 1):
+                window = " ".join(t_words[i:i + len(p_words)])
+                if difflib.SequenceMatcher(None, window, p).ratio() >= 0.84:
+                    return True
+        return False
+
     def _has_command(self, text: str, command_list: list) -> bool:
         """يتحقق ما إذا كانت الكلمة/الجملة موجودة كأمر كامل وليس كجزء من كلمة أخرى."""
         for pattern in command_list:
             regex = r'(?<!\w)' + re.escape(pattern) + r'(?!\w)'
             if re.search(regex, text, re.IGNORECASE):
+                return True
+        for pattern in command_list:
+            if self._similar_enough(text, pattern):
+                logger.debug("[Logic] Fuzzy command match: %r ~= %r", text, pattern)
                 return True
         return False
 
@@ -307,6 +373,14 @@ class LogicController:
             t_new, count = re.subn(regex, "", t, count=1)
             if count > 0:
                 return t_new.strip()
+        words = t.split()
+        for pattern in sorted(_WAKE_WORDS, key=lambda p: len(p.split()), reverse=True):
+            p_words = pattern.lower().split()
+            if len(words) < len(p_words):
+                continue
+            prefix = " ".join(words[:len(p_words)])
+            if self._similar_enough(prefix, pattern):
+                return " ".join(words[len(p_words):]).strip()
         return t
 
     def _wait_for_wake_word(self):

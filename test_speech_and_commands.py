@@ -243,5 +243,29 @@ class TestVoiceCommands(unittest.TestCase):
         self.assertTrue(required_ar.issubset(set(OFFLINE_COMMANDS_AR)))
         print("  ✓ English and Arabic offline grammars cover the main spoken commands")
 
+    def test_fuzzy_command_matching_for_small_mistakes(self):
+        print("\nTesting fuzzy command matching for small speech mistakes:")
+        self.lc._current_name = "Unknown"
+
+        self.reg.start_register.reset_mock()
+        self._handle_spoken_phrase("vison", "regster")
+        self.reg.start_register.assert_called_once()
+        print("  ✓ 'vison regster' -> register")
+
+        self.reg.start_improve.reset_mock()
+        self._handle_spoken_phrase("vision", "improv person")
+        self.reg.start_improve.assert_called_once_with()
+        print("  ✓ 'vision improv person' -> improve person")
+
+        self.reg.start_delete.reset_mock()
+        self._handle_spoken_phrase("vision", "delet person")
+        self.reg.start_delete.assert_called_once()
+        print("  ✓ 'vision delet person' -> delete person with confirmation")
+
+        self.reg.start_register.reset_mock()
+        self._handle_spoken_phrase("فيج", "سجل")
+        self.reg.start_register.assert_called_once()
+        print("  ✓ 'فيج سجل' -> register")
+
 if __name__ == "__main__":
     unittest.main()

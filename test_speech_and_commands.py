@@ -18,10 +18,12 @@ import config
 from logic_controller import (
     LogicController,
     _WAKE_WORDS, _CLOSE_WORDS, _AR_WORDS, _EN_WORDS,
-    _REG_WORDS, _IMPROVE_WORDS, _DEL_WORDS, _BLOCK_WORDS, _UNBLK_WORDS,
+    _AUTO_PAUSE_WORDS, _AUTO_RESUME_WORDS,
+    _REG_WORDS, _IMPROVE_WORDS, _DEL_WORDS, _CLEAR_ALL_WORDS, _BLOCK_WORDS, _UNBLK_WORDS,
     _WHO_WORDS, _LIST_WORDS, _QUIET_WORDS, _SPEAK_WORDS,
     _MALE_AR_WORDS, _FEMALE_AR_WORDS, _MALE_EN_WORDS, _FEMALE_EN_WORDS
 )
+from shared.stt import OFFLINE_COMMANDS_EN, OFFLINE_COMMANDS_AR
 
 class TestVoiceCommands(unittest.TestCase):
     def setUp(self):
@@ -177,6 +179,69 @@ class TestVoiceCommands(unittest.TestCase):
             self.lc._handle_command(w)
             self.tts.set_voice.assert_called_with("en", "female")
             print(f"  ✓ '{w}' -> Switched to English Female Voice")
+
+    def test_auto_announcement_commands(self):
+        print("\nTesting Automatic Announcement Pause/Resume Commands:")
+        for w in _AUTO_PAUSE_WORDS:
+            self.tts.reset_mock()
+            self.lc._handle_command(w)
+            self.assertFalse(self.lc._auto_announce_enabled)
+            self.assertFalse(self._said_not_recognized())
+            print(f"  ✓ '{w}' -> Auto announcements paused")
+
+        for w in _AUTO_RESUME_WORDS:
+            self.tts.reset_mock()
+            self.lc._handle_command(w)
+            self.assertTrue(self.lc._auto_announce_enabled)
+            self.assertFalse(self._said_not_recognized())
+            print(f"  ✓ '{w}' -> Auto announcements resumed")
+
+    def _said_not_recognized(self):
+        expected = self.lc._t("not_recognized")
+        return any(call.args and call.args[0] == expected for call in self.tts.say_wait.call_args_list)
+
+    def _handle_spoken_phrase(self, wake_word, command):
+        phrase = f"{wake_word} {command}"
+        stripped = self.lc._strip_wake_word(phrase)
+        self.assertNotEqual(stripped, phrase)
+        self.lc._handle_command(stripped)
+        self.assertFalse(self._said_not_recognized(), f"Command was not recognized: {phrase}")
+
+    def test_all_commands_work_with_wake_word_prefix(self):
+        print("\nTesting spoken command forms with wake word prefixes:")
+        self.lc._current_name = "Unknown"
+        command_groups = [
+            _AUTO_PAUSE_WORDS, _AUTO_RESUME_WORDS,
+            _AR_WORDS, _EN_WORDS,
+            _REG_WORDS, _IMPROVE_WORDS, _DEL_WORDS, _CLEAR_ALL_WORDS,
+            _BLOCK_WORDS, _UNBLK_WORDS, _WHO_WORDS, _LIST_WORDS,
+            _QUIET_WORDS, _SPEAK_WORDS,
+            _MALE_AR_WORDS, _FEMALE_AR_WORDS, _MALE_EN_WORDS, _FEMALE_EN_WORDS,
+        ]
+        for group in command_groups:
+            for command in group:
+                self.tts.reset_mock()
+                self.reg.reset_mock()
+                self._handle_spoken_phrase("vision", command)
+                print(f"  ✓ 'vision {command}'")
+
+    def test_offline_vosk_grammar_contains_supported_commands(self):
+        print("\nTesting offline Vosk command grammar coverage:")
+        required_en = {
+            "vision quiet", "vision mute", "vision silence", "vision unmute",
+            "vision improve person", "vision improved person",
+            "vision delete all", "vision delete all names",
+            "vision list names", "vision registered names",
+        }
+        required_ar = {
+            "فيجن سجل", "فيجن شخص جديد", "فيجن حسن الشخص", "فيجن حسن التسجيل",
+            "فيجن احذف شخص", "فيجن احذف رقم", "فيجن امسح الكل",
+            "فيجن اسماء", "فيجن احظر", "فيجن فك حظر",
+            "فيجن هدوء", "فيجن تابع", "فيجن اسكت", "فيجن شغل الصوت",
+        }
+        self.assertTrue(required_en.issubset(set(OFFLINE_COMMANDS_EN)))
+        self.assertTrue(required_ar.issubset(set(OFFLINE_COMMANDS_AR)))
+        print("  ✓ English and Arabic offline grammars cover the main spoken commands")
 
 if __name__ == "__main__":
     unittest.main()

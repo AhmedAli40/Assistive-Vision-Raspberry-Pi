@@ -22,7 +22,6 @@ Optimizations applied:
 Press Q or ESC to quit.
 """
 
-import cv2
 import sys
 import os
 import time
@@ -31,6 +30,11 @@ import csv
 import numpy as np
 from datetime import datetime
 from collections import deque, Counter
+
+if os.environ.get("VISION_RPI_MODE", "").strip().lower() in {"1", "true", "yes", "on"}:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import cv2
 
 # ── Fix: UTF-8 output on Windows to prevent UnicodeEncodeError ────────────────
 if sys.platform == 'win32':
@@ -608,14 +612,16 @@ class AssistiveVisionSystem:
                     cv2.imshow(config.WINDOW_TITLE, frame)
 
                 # ── Key Handler ───────────────────────────────────────────
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q') or key == 27:
-                    print("Exiting...")
-                    break
+                if config.SHOW_WINDOW:
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q') or key == 27:
+                        print("Exiting...")
+                        break
 
         finally:
             cap.release()
-            cv2.destroyAllWindows()
+            if config.SHOW_WINDOW:
+                cv2.destroyAllWindows()
             if self._log_file:
                 self._log_file.close()
             print("System closed.")

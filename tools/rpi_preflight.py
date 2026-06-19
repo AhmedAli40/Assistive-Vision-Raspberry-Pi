@@ -63,10 +63,18 @@ def main():
         Path("models/vosk-model-ar"),
         Path("models/vosk-model-ar-mgb2-0.4"),
     ]
-    ar_vosk_ok = any(path.exists() for path in ar_vosk_paths)
+    ar_vosk_model = next((path for path in ar_vosk_paths if path.exists()), None)
+    ar_vosk_ok = ar_vosk_model is not None
     print(f"{'Arabic Vosk model':20} {'OK' if ar_vosk_ok else 'MISSING'}")
     if not ar_vosk_ok:
         print("Warning: offline Arabic commands will be limited without an Arabic Vosk model.")
+    else:
+        words_file = ar_vosk_model / "graph" / "words.txt"
+        if words_file.exists():
+            print(f"{'Arabic Vosk words':20} OK ({words_file})")
+        else:
+            print(f"{'Arabic Vosk words':20} MISSING ({words_file})")
+            print("Warning: the Arabic Vosk folder is incomplete. Re-download or re-copy it.")
 
     print("READY" if ok else "NOT READY")
     raise SystemExit(0 if ok else 1)

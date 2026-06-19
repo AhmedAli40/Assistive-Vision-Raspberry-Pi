@@ -383,8 +383,12 @@ class STT:
             try:
                 from vosk import Model, KaldiRecognizer, SetLogLevel
                 SetLogLevel(-1)
+            except Exception as e:
+                print(f"[STT] Vosk import failed: {e}")
+                return
 
-                # English
+            # English Vosk should keep working even if Arabic Vosk is missing or broken.
+            try:
                 if os.path.exists(VOSK_MODEL_EN):
                     print(f"[STT] Loading English Vosk model: {VOSK_MODEL_EN}")
                     m = Model(VOSK_MODEL_EN)
@@ -397,8 +401,11 @@ class STT:
                     print("[STT] English Vosk ready")
                 else:
                     print("[STT] English Vosk model not found")
+            except Exception as e:
+                print(f"[STT] English Vosk init failed: {e}")
 
-                # Arabic
+            # Arabic Vosk is optional. If the downloaded folder is incomplete, keep EN fallback alive.
+            try:
                 if os.path.exists(VOSK_MODEL_AR):
                     print(f"[STT] Loading Arabic Vosk model: {VOSK_MODEL_AR}")
                     m2 = Model(VOSK_MODEL_AR)
@@ -414,9 +421,8 @@ class STT:
                             print(f"[STT]   - {path}")
                     print("[STT] Download:")
                     print("[STT] https://alphacephei.com/vosk/models/vosk-model-ar-mgb2-0.4.zip")
-
             except Exception as e:
-                print(f"[STT] Vosk init failed: {e}")
+                print(f"[STT] Arabic Vosk init failed: {e}")
 
         threading.Thread(target=_load, daemon=True).start()
 

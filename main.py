@@ -31,9 +31,6 @@ import numpy as np
 from datetime import datetime
 from collections import deque, Counter
 
-if os.environ.get("VISION_RPI_MODE", "").strip().lower() in {"1", "true", "yes", "on"}:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 import cv2
 
 # ── Fix: UTF-8 output on Windows to prevent UnicodeEncodeError ────────────────

@@ -45,7 +45,7 @@ _VOSK_NOISE_COMMAND_WORDS = {
     "block", "unblock", "allow", "all", "names", "arabic", "english",
     "male", "female", "voice", "number", "one", "two", "three", "four",
     "five", "six", "seven", "eight", "nine", "ten", "yes", "no",
-    "goodbye", "bye", "quiet", "mute", "silence", "unmute", "standby",
+    "goodbye", "bye", "quiet", "mute", "silence", "standby",
     "pause", "resume", "continue",
 }
 
@@ -235,8 +235,8 @@ OFFLINE_COMMANDS_EN = [
     "vision english male voice", "vision english female voice",
     "arabic male voice", "arabic female voice",
     "english male voice", "english female voice",
-    "vision quiet", "vision mute", "vision silence", "vision unmute",
-    "quiet", "mute", "silence", "unmute",
+    "vision quiet", "vision mute", "vision silence",
+    "quiet", "mute", "silence",
     "yes", "no", "yeah", "nope", "okay", "cancel",
     "number", "one", "two", "three", "four", "five",
     "six", "seven", "eight", "nine", "ten"

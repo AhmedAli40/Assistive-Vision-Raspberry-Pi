@@ -228,7 +228,7 @@ class TestVoiceCommands(unittest.TestCase):
     def test_offline_vosk_grammar_contains_supported_commands(self):
         print("\nTesting offline Vosk command grammar coverage:")
         required_en = {
-            "vision quiet", "vision mute", "vision silence", "vision unmute",
+            "vision quiet", "vision mute", "vision silence",
             "vision improve person", "vision improved person",
             "vision delete all", "vision delete all names",
             "vision list names", "vision registered names",

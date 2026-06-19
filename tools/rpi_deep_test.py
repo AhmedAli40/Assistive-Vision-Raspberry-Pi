@@ -79,6 +79,10 @@ def check_models():
 
 def check_camera():
     print("\n== Camera ==")
+    if os.environ.get("VISION_SKIP_CAMERA_TEST", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        warn("Camera test skipped", "VISION_SKIP_CAMERA_TEST=1")
+        return True
+
     try:
         import cv2
     except Exception as e:
@@ -86,7 +90,11 @@ def check_camera():
         return False
 
     success = False
+    tested_indices = []
     for index in [config.CAMERA_INDEX, 0, 1, 2]:
+        if index in tested_indices:
+            continue
+        tested_indices.append(index)
         cap = cv2.VideoCapture(int(index))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(config.FRAME_WIDTH))
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(config.FRAME_HEIGHT))

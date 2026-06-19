@@ -8,9 +8,11 @@ source .venv/bin/activate
 git pull
 chmod +x run_pi.sh
 python tools/rpi_preflight.py
+python tools/rpi_deep_test.py
 ```
 
 The preflight should print `READY`.
+The deep test should print `DEEP TEST READY`.
 
 Required files:
 

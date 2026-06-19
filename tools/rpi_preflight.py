@@ -75,6 +75,7 @@ def main():
         else:
             print(f"{'Arabic Vosk words':20} MISSING ({words_file})")
             print("Warning: the Arabic Vosk folder is incomplete. Re-download or re-copy it.")
+            ok = False
 
     print("READY" if ok else "NOT READY")
     raise SystemExit(0 if ok else 1)
